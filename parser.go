@@ -18,10 +18,17 @@
 package simdhttp
 
 import (
+	"bytes"
 	"errors"
 
 	"github.com/sebishogun/simd"
 )
+
+// ctlScanThreshold is the value length above which scanning for control
+// bytes goes through the simd kernel rather than an inline loop. Below it
+// the kernel's call boundary costs more than the scan, as the shape sweep
+// showed on many-short-header heads.
+const ctlScanThreshold = 64
 
 // Request is a parsed request head. All fields alias the input buffer;
 // the caller owns the bytes and their lifetime.
@@ -30,6 +37,10 @@ type Request struct {
 	Target  []byte
 	Proto   []byte
 	Headers []Header
+
+	// lineEnds is scratch for the one-pass boundary scan, reused across
+	// Parse calls on the same Request.
+	lineEnds []int32
 }
 
 // Header is one name: value pair, aliasing the input.
@@ -72,40 +83,57 @@ func Parse(req *Request, b []byte) (consumed int, err error) {
 	req.Method = line[:sp1]
 	req.Target = line[sp1+1 : sp2]
 	req.Proto = line[sp2+1:]
-	if len(req.Target) == 0 || len(req.Proto) == 0 {
+	if len(req.Target) == 0 {
 		return 0, ErrMalformed
 	}
-	for _, c := range req.Method {
-		if !isTokenByte(c) {
-			return 0, ErrMalformed
-		}
+	// The version is HTTP/1.0 or HTTP/1.1 -- net/http rejects anything
+	// else, and a request line whose third field is not a version is one
+	// of the ways a smuggled request hides.
+	if !isHTTPVersion(req.Proto) {
+		return 0, ErrMalformed
+	}
+	// The method is a short token; validated inline, no dispatch.
+	if !tokenOnly(req.Method) {
+		return 0, ErrMalformed
 	}
 
 	req.Headers = req.Headers[:0]
-	pos := nl + 1
-	for {
-		rest := b[pos:]
-		nl := simd.IndexByte(rest, '\n')
-		if nl < 0 {
-			return 0, ErrIncomplete
-		}
-		line := rest[:nl]
+	block := b[nl+1:]
+	// One pass finds every line end in the header block; the walk below
+	// splits on the index instead of scanning for each '\n' separately,
+	// which is what kept a hundred-header head linear in the scan rather
+	// than one IndexByte call per line. lineEnds is sized to the block --
+	// a head cannot have more line ends than bytes -- and reused across
+	// calls through the request.
+	if cap(req.lineEnds) < len(block)/2+1 {
+		req.lineEnds = make([]int32, len(block)/2+1)
+	}
+	ends := req.lineEnds[:cap(req.lineEnds)]
+	ne := simd.IndexAll(ends, block, '\n')
+	start := 0
+	for k := 0; k < ne; k++ {
+		lineEnd := int(ends[k])
+		line := block[start:lineEnd]
 		if len(line) == 0 || line[len(line)-1] != '\r' {
 			return 0, ErrMalformed
 		}
 		line = line[:len(line)-1]
-		pos += nl + 1
+		consumedTo := nl + 1 + lineEnd + 1
+		start = lineEnd + 1
 		if len(line) == 0 {
-			return pos, nil // the blank line: head complete
+			return consumedTo, nil // the blank line: head complete
 		}
-		colon := simd.IndexByte(line, ':')
+		// bytes.IndexByte is a compiler intrinsic -- inlined, no dispatch
+		// -- which beats a kernel call on a short header line, the shape
+		// the sweep showed dominating a hundred-header head. The big
+		// linear scan (every line end) already happened in one IndexAll
+		// pass above; here each line is tens of bytes.
+		colon := bytes.IndexByte(line, ':')
 		if colon <= 0 {
 			return 0, ErrMalformed
 		}
 		name := line[:colon]
-		// A field name is a token: one vector scan for anything outside
-		// the token set replaces the byte loop.
-		if simd.IndexNotAny(name, tokenSet) >= 0 {
+		if !tokenOnly(name) {
 			return 0, ErrMalformed
 		}
 		val := line[colon+1:]
@@ -115,19 +143,55 @@ func Parse(req *Request, b []byte) (consumed int, err error) {
 		for len(val) > 0 && (val[len(val)-1] == ' ' || val[len(val)-1] == '\t') {
 			val = val[:len(val)-1]
 		}
-		// Field values may not contain bare CR or other controls except
-		// HTAB: one scan for a byte below 0x20 that is not tab.
-		if i := simd.IndexAnyOrLess(val, "\x7f", 0x20); i >= 0 && val[i] != '\t' {
-			return 0, ErrMalformed
+		// A long value is worth the kernel; a short one is scanned inline.
+		// Both reject a control byte other than HTAB.
+		if len(val) >= ctlScanThreshold {
+			if i := simd.IndexAnyOrLess(val, "\x7f", 0x20); i >= 0 && val[i] != '\t' {
+				return 0, ErrMalformed
+			}
+		} else {
+			for _, c := range val {
+				if c < 0x20 && c != '\t' || c == 0x7f {
+					return 0, ErrMalformed
+				}
+			}
 		}
 		req.Headers = append(req.Headers, Header{Name: name, Value: val})
 	}
+	// Ran out of line ends before the blank line: the head is incomplete.
+	return 0, ErrIncomplete
 }
 
 // tokenSet is RFC 9110's token alphabet.
 const tokenSet = "!#$%&'*+-.^_`|~0123456789" +
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-func isTokenByte(c byte) bool {
-	return c > 0x20 && c < 0x7f && simd.IndexByte(tokenSet, c) >= 0
+// isHTTPVersion reports whether p is exactly "HTTP/1.0" or "HTTP/1.1".
+// This parser handles the /1.x line grammar; HTTP/2 and /3 are framed,
+// not text, and belong to a different reader.
+func isHTTPVersion(p []byte) bool {
+	return len(p) == 8 && string(p[:7]) == "HTTP/1." && (p[7] == '0' || p[7] == '1')
+}
+
+// tokenBytes marks the RFC 9110 token alphabet for inline validation --
+// a 256-entry lookup, no dispatch, which beats a kernel scan on the short
+// names and methods that dominate a real request head.
+var tokenBytes = func() [256]bool {
+	var t [256]bool
+	for _, c := range []byte(tokenSet) {
+		t[c] = true
+	}
+	return t
+}()
+
+func tokenOnly(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		if !tokenBytes[c] {
+			return false
+		}
+	}
+	return true
 }

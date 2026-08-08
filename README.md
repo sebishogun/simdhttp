@@ -26,13 +26,20 @@ The standard reader tolerates both; this requires a token name and CRLF.
 
 ## Speed
 
-A realistic nine-header browser request head, minimum of three on
-amd64/avx512:
+Four shapes, minimum of three on amd64/avx512, ns per head:
 
-| | ns/head | |
-|---|---|---|
-| **simdhttp** | **1,097** | |
-| net/http `ReadRequest` | 1,341 | 1.22× |
+| shape | simdhttp | net/http | |
+|---|---|---|---|
+| typical 9-header | ~1,400 | ~1,470 | 1.05× |
+| 100 headers | **2,219** | 10,491 | **4.7×** |
+| giant header value | **8,032** | 27,893 | **3.5×** |
+
+The 100-header row is the sweep-then-fix story: a first cut lost it 1.3x
+because per-header work called kernels on sub-threshold slices where
+dispatch dominates. One IndexAll pass finds every line end; the colon and
+short-line validation are then compiler intrinsics and inline loops, no
+dispatch. The giant-value win is aliasing -- net/http copies the value,
+this returns a sub-slice.
 
 Pure Go, no cgo: simd ships its kernels as committed assembly, so this is
 an ordinary `go get`.
