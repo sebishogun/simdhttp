@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="228" font-family="system-ui,-apple-system,sans-serif" font-size="13">
+<style>text{fill:#222}.mut{fill:#888}@media(prefers-color-scheme:dark){text{fill:#e0e0e0}.mut{fill:#999}}</style>
+<text x="14" y="26" font-size="15" font-weight="700">simdhttp — throughput vs net/http</text>
+<text x="14" y="46" class="mut" font-size="12">ns per request head, lower is better; minimum of six</text>
+<text x="14" y="84">typical 9-header</text>
+<rect x="200" y="73" width="18" height="13" rx="2" fill="#3aa675"/>
+<text x="224" y="84" font-size="11">ours 1.4K  <tspan font-weight="700">1.1x slower</tspan></text>
+<rect x="200" y="89" width="19" height="10" rx="2" fill="#bbb"/>
+<text x="225" y="98" class="mut" font-size="10">net/http 1.5K</text>
+<text x="14" y="130">100 headers</text>
+<rect x="200" y="119" width="29" height="13" rx="2" fill="#3aa675"/>
+<text x="235" y="130" font-size="11">ours 2.2K  <tspan font-weight="700">4.7x slower</tspan></text>
+<rect x="200" y="135" width="135" height="10" rx="2" fill="#bbb"/>
+<text x="341" y="144" class="mut" font-size="10">net/http 10.5K</text>
+<text x="14" y="176">giant value</text>
+<rect x="200" y="165" width="104" height="13" rx="2" fill="#3aa675"/>
+<text x="310" y="176" font-size="11">ours 8.0K  <tspan font-weight="700">3.5x slower</tspan></text>
+<rect x="200" y="181" width="360" height="10" rx="2" fill="#bbb"/>
+<text x="566" y="190" class="mut" font-size="10">net/http 27.9K</text>
+</svg>

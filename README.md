@@ -26,6 +26,9 @@ The standard reader tolerates both; this requires a token name and CRLF.
 
 ## Speed
 
+![benchmarks](docs/bench.svg)
+
+
 Four shapes, minimum of three on amd64/avx512, ns per head:
 
 | shape | simdhttp | net/http | |
