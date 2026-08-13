@@ -65,7 +65,28 @@ var (
 	ErrMalformed = errors.New("simdhttp: malformed head")
 	// ErrMissingHost means an HTTP/1.1 head had no Host, or an empty one.
 	ErrMissingHost = errors.New("simdhttp: missing or empty Host header")
+	// ErrHeadTooLarge, ErrTooManyHeaders, ErrValueTooLarge and
+	// ErrRequestLineTooLarge are the limit verdicts. A head past a limit
+	// always returns its typed error, never ErrIncomplete -- a caller must
+	// be able to tell "read more" from "stop reading".
+	ErrHeadTooLarge        = errors.New("simdhttp: head exceeds limit")
+	ErrTooManyHeaders      = errors.New("simdhttp: too many headers")
+	ErrValueTooLarge       = errors.New("simdhttp: header value exceeds limit")
+	ErrRequestLineTooLarge = errors.New("simdhttp: request line exceeds limit")
 )
+
+// limits bound one parse. MaxHeadSize deliberately exceeds
+// MaxHeaderValueLen so an oversized single value reaches the value-limit
+// error rather than being pre-empted by the head-size check
+// (docs/lld/http1-head-parser.md section 3.2).
+type limits struct {
+	headSize, requestLine, headerCount, valueLen int
+}
+
+var profileLimits = [2]limits{
+	Compatible: {headSize: 2 << 20, requestLine: 8 << 10, headerCount: 100, valueLen: 1 << 20},
+	Strict:     {headSize: 256 << 10, requestLine: 4 << 10, headerCount: 50, valueLen: 64 << 10},
+}
 
 // Profile selects the verdict set. Compatible mirrors net/http's reader;
 // Strict is the documented superset of rejections.
@@ -80,13 +101,22 @@ const (
 // bytes consumed, including the terminating blank line. Headers is
 // appended into req.Headers, which the caller may pre-size and reuse.
 func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
-	_ = profile // threaded through; consulted from Task 4 on
+	lim := profileLimits[Compatible]
+	if profile == Strict {
+		lim = profileLimits[Strict]
+	}
+	if len(b) > lim.headSize {
+		return 0, ErrHeadTooLarge
+	}
 	// The request line: METHOD SP TARGET SP PROTO CRLF.
 	nl := simd.IndexByte(b, '\n')
 	if nl < 0 {
 		return 0, ErrIncomplete
 	}
 	line := b[:nl]
+	if len(line) > lim.requestLine {
+		return 0, ErrRequestLineTooLarge
+	}
 	if len(line) == 0 || line[len(line)-1] != '\r' {
 		return 0, ErrMalformed
 	}
@@ -228,6 +258,12 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 				return 0, ErrMalformed // D9: stricter than httpguts
 			}
 			hostNonEmpty = true // present-but-empty counts as missing (D5)
+		}
+		if len(val) > lim.valueLen {
+			return 0, ErrValueTooLarge
+		}
+		if len(req.Headers) >= lim.headerCount {
+			return 0, ErrTooManyHeaders
 		}
 		if bytes.EqualFold(name, clHeader) {
 			// A second Content-Length is rejected in both profiles. Go dedupes

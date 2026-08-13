@@ -152,3 +152,36 @@ func TestFramingViews(t *testing.T) {
 		t.Fatalf("TransferEncodingLines = %q", req.TransferEncodingLines)
 	}
 }
+
+func TestLimits(t *testing.T) {
+	var req Request
+	// 60 valid header lines exceeds the strict count of 50, with the head
+	// still far under the strict head-size bound.
+	_, err := Parse(&req, []byte("GET / HTTP/1.1\r\nHost: h\r\n"+strings.Repeat("X-H: v\r\n", 60)+"\r\n"), Strict)
+	if err != ErrTooManyHeaders {
+		t.Fatalf("header-count limit: %v", err)
+	}
+	// 1<<20+1 exceeds the compatible 1 MiB value limit, and is reachable
+	// because MaxHeadSize (2 MiB) exceeds it.
+	_, err = Parse(&req, []byte("GET / HTTP/1.1\r\nHost: h\r\nX: "+strings.Repeat("v", 1<<20+1)+"\r\n\r\n"), Compatible)
+	if err != ErrValueTooLarge {
+		t.Fatalf("value limit: %v", err)
+	}
+	// 60 valid 8 KiB headers (~500 KiB) trips the strict head-size entry
+	// check before the count check.
+	_, err = Parse(&req, []byte("GET / HTTP/1.1\r\n"+strings.Repeat("X: "+strings.Repeat("v", 1<<13)+"\r\n", 60)+"\r\n"), Strict)
+	if err != ErrHeadTooLarge {
+		t.Fatalf("head limit: %v", err)
+	}
+	// An over-long request line is its own verdict, not ErrIncomplete.
+	_, err = Parse(&req, []byte("GET /"+strings.Repeat("p", 9<<10)+" HTTP/1.1\r\nHost: h\r\n\r\n"), Compatible)
+	if err != ErrRequestLineTooLarge {
+		t.Fatalf("request-line limit: %v", err)
+	}
+	// A limit verdict never masquerades as "read more".
+	for _, e := range []error{ErrHeadTooLarge, ErrTooManyHeaders, ErrValueTooLarge, ErrRequestLineTooLarge} {
+		if e == ErrIncomplete {
+			t.Fatal("a limit error aliases ErrIncomplete")
+		}
+	}
+}
