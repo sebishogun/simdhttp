@@ -324,3 +324,150 @@ func TestBodyTrailersOnlyAfterEOF(t *testing.T) {
 		t.Fatalf("trailers after EOF: %v", b.Trailers())
 	}
 }
+
+// Close before EOF must leave the connection positioned exactly at the next
+// request, or the next head parse reads a body's tail as a request line.
+func TestBodyCloseDrainsFixed(t *testing.T) {
+	const next = "GET /next HTTP/1.1\r\nHost: h\r\n\r\n"
+	br := bufio.NewReader(strings.NewReader("hello" + next))
+	b := NewBodyReader(br, FixedLength(5), DefaultLimits(Compatible))
+	if _, err := b.Read(make([]byte, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !b.Drained() {
+		t.Fatal("Drained reports false after a completed drain")
+	}
+	if rest, _ := io.ReadAll(br); string(rest) != next {
+		t.Fatalf("remainder %q, want %q", rest, next)
+	}
+	if b.Consumed() != 5 {
+		t.Fatalf("consumed %d, want 5", b.Consumed())
+	}
+}
+
+func TestBodyCloseDrainsChunked(t *testing.T) {
+	const next = "GET /next HTTP/1.1\r\nHost: h\r\n\r\n"
+	br := bufio.NewReader(strings.NewReader("5\r\nhello\r\n3\r\nabc\r\n0\r\nX-T: v\r\n\r\n" + next))
+	b := NewBodyReader(br, Chunked, DefaultLimits(Compatible))
+	if _, err := b.Read(make([]byte, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !b.Drained() {
+		t.Fatal("Drained reports false after a completed drain")
+	}
+	if rest, _ := io.ReadAll(br); string(rest) != next {
+		t.Fatalf("remainder %q, want %q", rest, next)
+	}
+}
+
+// A body past the drain budget must abort rather than read it: draining an
+// unbounded body on the peer's schedule is the denial of service the budget
+// exists to prevent. The caller closes such a connection.
+func TestBodyCloseAbortsPastDrainBudget(t *testing.T) {
+	lim := DefaultLimits(Compatible)
+	lim.MaxDrainSize = 16
+	br := bufio.NewReader(strings.NewReader(strings.Repeat("x", 4096)))
+	b := NewBodyReader(br, FixedLength(4096), lim)
+	err := b.Close()
+	if !errors.Is(err, ErrDrainTooLarge) {
+		t.Fatalf("close: %v, want ErrDrainTooLarge", err)
+	}
+	if b.Drained() {
+		t.Fatal("Drained reports true after an aborted drain")
+	}
+}
+
+// Close is idempotent and always safe: a server loop closes in a defer whether
+// or not the handler already read the body to EOF.
+func TestBodyCloseIdempotent(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   string
+		f    Framing
+	}{
+		{"fixed", "hello", FixedLength(5)},
+		{"chunked", "5\r\nhello\r\n0\r\n\r\n", Chunked},
+		{"none", "", NoBody},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			br := bufio.NewReader(strings.NewReader(c.in))
+			b := NewBodyReader(br, c.f, DefaultLimits(Compatible))
+			io.ReadAll(b)
+			for i := 0; i < 3; i++ {
+				if err := b.Close(); err != nil {
+					t.Fatalf("close %d: %v", i, err)
+				}
+			}
+			if !b.Drained() {
+				t.Fatal("Drained false after reading to EOF")
+			}
+		})
+	}
+}
+
+// Closing a body whose framing is already broken must not hang or panic; the
+// connection is not reusable and Drained says so.
+func TestBodyCloseAfterError(t *testing.T) {
+	for _, in := range []string{"zz\r\n", "5\r\nhelloXX", "hel"} {
+		f := Chunked
+		if in == "hel" {
+			f = FixedLength(5)
+		}
+		br := bufio.NewReader(strings.NewReader(in))
+		b := NewBodyReader(br, f, DefaultLimits(Compatible))
+		io.ReadAll(b)
+		if err := b.Close(); err == nil {
+			t.Fatalf("%q: close reported success on a broken body", in)
+		}
+		if b.Drained() {
+			t.Fatalf("%q: Drained true after a framing error", in)
+		}
+	}
+}
+
+// The pipelining contract: after a body is read or drained, the next head
+// parses from the connection with no offset bookkeeping by the caller.
+func TestBodyPipelinedHeadParses(t *testing.T) {
+	const second = "GET /second HTTP/1.1\r\nHost: h\r\n\r\n"
+	for _, c := range []struct {
+		name  string
+		first string
+		f     Framing
+		drain bool
+	}{
+		{"fixed read", "hello", FixedLength(5), false},
+		{"fixed drained", "hello", FixedLength(5), true},
+		{"chunked read", "5\r\nhello\r\n0\r\n\r\n", Chunked, false},
+		{"chunked drained", "5\r\nhello\r\n0\r\nX-T: v\r\n\r\n", Chunked, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			br := bufio.NewReader(strings.NewReader(c.first + second))
+			b := NewBodyReader(br, c.f, DefaultLimits(Compatible))
+			if c.drain {
+				if err := b.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := io.ReadAll(b); err != nil {
+				t.Fatal(err)
+			}
+			head, err := io.ReadAll(br)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req Request
+			n, err := Parse(&req, head, Compatible)
+			if err != nil {
+				t.Fatalf("second head: %v (bytes %q)", err, head)
+			}
+			if n != len(second) || string(req.Target) != "/second" {
+				t.Fatalf("parsed %d bytes, target %q", n, req.Target)
+			}
+		})
+	}
+}

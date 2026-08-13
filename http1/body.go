@@ -98,6 +98,10 @@ type BodyReader struct {
 	consumed int64 // bytes taken off the connection for this body
 	err      error // sticky: once set, every Read repeats it
 
+	closed   bool  // Close has run
+	closeErr error // what Close reported, so it is idempotent
+	drained  bool  // the body reached its end
+
 	// chunked state
 	state       chunkState
 	chunkRemain int64       // bytes left in the chunk being served
@@ -478,3 +482,56 @@ var tokenChar = func() (t [128]bool) {
 // only once Read has returned io.EOF; before that the section has not arrived
 // and the map is empty.
 func (b *BodyReader) Trailers() http.Header { return b.trailers }
+
+// ErrDrainTooLarge means the unread body exceeded Limits.MaxDrainSize. The
+// connection cannot be reused; the caller closes it.
+var ErrDrainTooLarge = errors.New("simdhttp: body too large to drain")
+
+// Close reads whatever of the body the caller did not, so the connection is
+// positioned on the next request rather than in the middle of this one. It is
+// idempotent, and it never reads more than Limits.MaxDrainSize: draining an
+// unbounded body on the peer's schedule is itself the denial of service the
+// budget exists to prevent.
+//
+// A body past the budget, or one whose framing already failed, leaves Drained
+// false -- that connection is not reusable.
+func (b *BodyReader) Close() error {
+	if b.closed {
+		return b.closeErr
+	}
+	b.closed = true
+	switch {
+	case b.err == io.EOF:
+		b.drained = true // already read to the end
+		return nil
+	case b.err != nil:
+		b.closeErr = b.err // a framing error; the wire position is unknown
+		return b.closeErr
+	}
+	budget := b.lim.MaxDrainSize
+	var scratch [512]byte
+	for {
+		p := scratch[:]
+		if int64(len(p)) > budget+1 { // +1 so exceeding the budget is observable
+			p = p[:budget+1]
+		}
+		n, err := b.Read(p)
+		budget -= int64(n)
+		if budget < 0 {
+			b.closeErr = ErrDrainTooLarge
+			return b.closeErr
+		}
+		if err == io.EOF {
+			b.drained = true
+			return nil
+		}
+		if err != nil {
+			b.closeErr = err
+			return err
+		}
+	}
+}
+
+// Drained reports whether the body reached its end, by reading or by draining.
+// A connection is safe to reuse for the next request only when it is true.
+func (b *BodyReader) Drained() bool { return b.drained }
