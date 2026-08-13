@@ -371,3 +371,29 @@ is the only package in the graph importing `encoding/json`, and no
 package of this module does. The aliases are not removable without
 breaking simdjson's drop-in promise. The `json.Marshal` fallback is
 simdjson's to remove and is recorded there.
+
+## 14. The oracle version in the documents was not the toolchain on PATH
+
+**Believed.** `docs/verification.md` and `docs/architecture.md` both
+stated that every behavior verdict refers to "the Go 1.26.5 toolchain
+actually run", and `mise current` agrees: `go 1.26.5`.
+
+**Actually.** `which go` resolves to
+`.../mise/installs/go/1.26.2/bin/go` and `go version` reports
+`go1.26.2`. Whatever mise declares, the binary that executes is 1.26.2,
+and every probe recorded in this repository has used it.
+
+**How it surfaced.** Writing the Phase 4 documentation pass and
+checking the claim before repeating it.
+
+**Source.** `go version`; `which go`; `mise current`.
+
+**Consequence.** The claim was corrected rather than the record
+rewritten, and the substance was checked rather than assumed: the
+router probe battery was replayed under 1.26.5 with its own GOROOT and
+build cache and produced **byte-identical output** to 1.26.2 —
+trailing-slash subtree matching, `{$}`, path cleaning with 307, the
+precedence rows and the conflict panic all agree. No verdict in this
+repository changes. The lesson is narrower than it looks: a version
+declared by a tool manager is not evidence that the version ran, and
+`go version` costs nothing to check.

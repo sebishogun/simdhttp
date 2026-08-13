@@ -22,9 +22,17 @@ replaces it.
 
 The gates below
 cover current code and the roadmap's phases; phase-specific gates are
-marked. All oracle verdicts in this document refer to the Go 1.26.5
-toolchain actually run; go.mod's `go 1.26.2` directive is a module
-floor, not an oracle date.
+marked.
+
+**On the oracle version.** This document and `docs/architecture.md`
+previously said every verdict refers to "the Go 1.26.5 toolchain
+actually run". The toolchain on PATH here is `go1.26.2` -- mise reports
+1.26.5, but the binary that executes is 1.26.2, so that is what every
+probe has actually used. The router probes were then replayed under
+1.26.5 with its own GOROOT and cache: **identical output**, so no
+recorded verdict changes. Verdicts in this repository should be read as
+holding on both, and `go version` is the thing to check before adding
+one (`docs/wrong.md` entry 14).
 
 ## 1. Unit and differential tests
 

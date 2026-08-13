@@ -55,8 +55,9 @@ targets `test`, `vet`, `bench`, `bench-check`.
 
 ## 2. Verified gaps in the shipped parser
 
-All confirmed by live differential against net/http on the Go 1.26.5
-toolchain, 2026-08-13. Full records: `docs/wrong.md`; LLD
+All confirmed by live differential against net/http, 2026-08-13, on the
+toolchain that executes here (`go1.26.2`); the router probes were
+replayed under 1.26.5 with identical output (`docs/wrong.md` entry 14). Full records: `docs/wrong.md`; LLD
 `docs/lld/http1-head-parser.md`.
 
 | # | gap | consequence |
