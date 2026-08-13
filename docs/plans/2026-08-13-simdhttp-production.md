@@ -713,19 +713,22 @@ git commit -m "router: immutable build and segment-trie matching"
 **Step 1: Write the failing tests** — 405 with an `Allow` header built
 ServeMux-exactly: the methods registered for the path **sorted
 lexicographically**, implicit `HEAD` whenever `GET` is registered
-(even with no explicit `HEAD` pattern), **no implicit `OPTIONS`**;
-exact strings asserted (e.g. `GET, HEAD, POST`); a custom method
-(`MKCOL`) matches exactly, is case-sensitive (`mkcol` does not
-match), and sorts into `Allow` with the rest; `HEAD` served by the
-`GET` handler unless an explicit `HEAD` exists; `OPTIONS *` answered
-with `Allow` — the test calls `ServeHTTP` directly (or runs a server
-with `DisableGeneralOptionsHandler: true`), because a standard
-`http.Server` intercepts `OPTIONS *` before the handler
-(`globalOptionsHandler`: 200, no `Allow`; probed on Go 1.26.5), and
-ServeMux alone answers 400; trailing slash: `RedirectTrailingSlash` on
-→ **307** to the slash form — parity with ServeMux, which also
-redirects with 307 (probed), off → 404; explicit `/users` +
-`/users/` both match their exact forms.
+(even with no explicit `HEAD` pattern), **no implicit `OPTIONS`**,
+and the **trailing-slash variant unioned in when the request path
+lacks a slash** (e.g. `POST` registered only on `/users/`, request
+`GET /users` → `Allow` includes `POST`); exact strings asserted (e.g.
+`GET, HEAD, POST`); a custom method (`MKCOL`) matches exactly, is
+case-sensitive (`mkcol` does not match), and sorts into `Allow` with
+the rest; a method-less `Handle("", …)` registration is rejected;
+`HEAD` served by the `GET` handler unless an explicit `HEAD` exists;
+`OPTIONS *` answered with `Allow` — the test calls `ServeHTTP`
+directly (or runs a server with `DisableGeneralOptionsHandler: true`),
+because a standard `http.Server` intercepts `OPTIONS *` before the
+handler (`globalOptionsHandler`: 200, no `Allow`; probed on Go
+1.26.5), and ServeMux alone answers 400; trailing slash:
+`RedirectTrailingSlash` on → **307** to the slash form — parity with
+ServeMux, which also redirects with 307 (probed), off → 404; explicit
+`/users` + `/users/` both match their exact forms.
 
 **Step 2: Run to verify they fail** — FAIL.
 
@@ -767,13 +770,16 @@ git commit -m "router: host-pattern matching"
 - Create: `router_diff_test.go`
 - Create: `router_bench_test.go`
 
-**Step 1: Write the differential harness** — generated pattern sets and
-request corpora (`docs/verification.md` §5): same route, same
+**Step 1: Write the differential harness** — generated pattern sets
+and request corpora (`docs/verification.md` §5): same route, same
 `PathValue`, same 405/404, **byte-identical `Allow` strings**
 (ServeMux-exact: lexicographic, implicit `HEAD` with `GET`, no
-implicit `OPTIONS`), and trailing-slash redirect parity (status and
-location — both 307, probed). `OPTIONS *` is excluded from the
-differential (simdhttp-specific; ServeMux alone 400s, the standard
+implicit `OPTIONS`, trailing-slash variant unioned in for slash-less
+request paths), and trailing-slash redirect parity (status and
+location — both 307, probed). Pattern sets use explicit token methods
+only — method-less ServeMux patterns are out of scope (router LLD
+§3) and are never generated or compared. `OPTIONS *` is excluded from
+the differential (simdhttp-specific; ServeMux alone 400s, the standard
 server intercepts it unless `DisableGeneralOptionsHandler` is set) and
 asserted directly in Task 14's router tests. And the match bench:
 

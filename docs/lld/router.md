@@ -76,23 +76,32 @@ with equal precedence) instead of silently choosing one, matching
 
 405 and method handling:
 
-- **Method space.** `Handle` accepts any valid RFC 9110 token method,
-  not a fixed set. At `Build`, every registered method — and the common
-  set `GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, CONNECT, TRACE` —
-  is compiled into a dense ID space (§6). Matching is exact and
-  case-sensitive (`get` does not match `GET`; the parser already
-  rejects non-token methods).
+- **Method space.** `Handle` accepts any valid RFC 9110 token method
+  and requires a non-empty one — every pattern carries an explicit
+  method. Method-less patterns (ServeMux's `HandleFunc("/path", …)`,
+  which matches any method) are **outside simdhttp's API by design**:
+  the router is built on the explicit token-method surface, and the
+  differential never generates method-less patterns. At `Build`,
+  every registered method — and the common set `GET, HEAD, POST, PUT,
+  PATCH, DELETE, OPTIONS, CONNECT, TRACE` — is compiled into a dense
+  ID space (§6). Matching is exact and case-sensitive (`get` does not
+  match `GET`; the parser already rejects non-token methods).
 - A path matched by patterns of *other* methods registers `405 Method
   Not Allowed` with an `Allow` header built **ServeMux-exactly** (Go
-  1.26.5 `matchingMethods` + `slices.Sorted`, `routing_tree.go`):
-  the set of methods registered for the path — including custom token
-  methods — **sorted lexicographically**, plus an implicit `HEAD`
-  entry whenever `GET` is registered; there is **no implicit
-  `OPTIONS`**. The one deliberate relaxation of "list only registered
-  methods": `Allow` lists `HEAD` even when no explicit `HEAD` pattern
-  exists, because `GET` implies it — exactly as ServeMux does. The
-  `Allow` value is deterministic for any build; construction happens
-  only on the cold 405 path and may allocate.
+  1.26.5): the methods registered for the path — including custom
+  token methods — **sorted lexicographically**, plus an implicit
+  `HEAD` entry whenever `GET` is registered; there is **no implicit
+  `OPTIONS`**. Two ServeMux details are reproduced verbatim: the
+  trailing-slash variant of the path is unioned in when the request
+  path lacks a slash (`mux.matchingMethods` in `server.go` unions
+  `path` and `path+"/"` — a request for `/users` unions the methods
+  registered on `/users/`), and implicit `HEAD` is added by the tree
+  layer (`routing_node.matchingMethods` in `routing_tree.go`). The
+  one deliberate relaxation of "list only registered methods":
+  `Allow` lists `HEAD` even when no explicit `HEAD` pattern exists,
+  because `GET` implies it — exactly as ServeMux does. The `Allow`
+  value is deterministic for any build; construction happens only on
+  the cold 405 path and may allocate.
 - `HEAD` is served by the `GET` handler when no `HEAD` pattern exists
   (the handler must not write a body — standard contract, documented);
   an explicit `HEAD` pattern wins.
@@ -192,25 +201,32 @@ through `SetPathValue` (which stores into `req`'s existing map).
 
 ## 8. Tests
 
-- Route differential vs `net/http.ServeMux`: generated pattern sets and
-  request corpora must agree on match, params, 405/Allow, trailing-slash
-  redirect (status **and** location — both are 307), and `PathValue`
-  contents (`docs/verification.md` §5). `OPTIONS *` is excluded: it is
-  simdhttp-specific (ServeMux alone 400s; the standard server
-  intercepts it unless `DisableGeneralOptionsHandler` is set) and is
-  asserted directly in router tests.
+- Route differential vs `net/http.ServeMux`: generated pattern sets
+  (explicit-token-method patterns only — method-less ServeMux
+  patterns are out of simdhttp's API, §3, and never generated) and
+  request corpora must agree on match, params, 405/Allow,
+  trailing-slash redirect (status **and** location — both are 307),
+  and `PathValue` contents (`docs/verification.md` §5). `OPTIONS *`
+  is excluded: it is simdhttp-specific (ServeMux alone 400s; the
+  standard server intercepts it unless
+  `DisableGeneralOptionsHandler` is set) and is asserted directly in
+  router tests.
 - Conflict and precedence unit tests (conflicts are `Build` errors;
   `MustBuild` panics on them by design); param decoding (`%20`, `%2F`,
   double-encoded) pinned against ServeMux.
 - Method-space tests: a custom token method (`MKCOL`, `REPORT`,
   case-sensitive `get` vs `GET`) matches exactly and participates in
   `Allow` lexicographically; the common-method inline path and the
-  custom fallback table agree with `Handle` registrations.
+  custom fallback table agree with `Handle` registrations; a method-
+  less `Handle("", …)` registration is rejected at registration time.
 - 405 `Allow` unit tests pinned to ServeMux semantics: lexicographic
   order; implicit `HEAD` present whenever `GET` is registered (even
   with no explicit `HEAD` pattern) and absent otherwise; no implicit
-  `OPTIONS`; custom methods sorted in with the rest; the exact
-  `Allow` string asserted (e.g. `GET, HEAD, POST`, `MKCOL, REPORT`).
+  `OPTIONS`; custom methods sorted in with the rest; **the trailing-
+  slash variant is unioned in when the request path lacks a slash**
+  (e.g. only `/users/` has `POST` registered and `/users` is
+  requested → `Allow` includes `POST`); the exact `Allow` string
+  asserted (e.g. `GET, HEAD, POST`, `MKCOL, REPORT`).
 - No-panic fuzz over random paths against a built table.
 - Bench: match of a 4-segment route with 2 params at 100k patterns;
   gate = 8.3% floor + `perf stat` + disassembly (no indirect call in the

@@ -101,15 +101,21 @@ simdhttp vs `net/http.ServeMux` on: matched route, `PathValue` contents,
 location — parity: both redirect with 307, probed on Go 1.26.5). The
 `Allow` comparison is exact: both sides must emit the same string —
 lexicographic over the methods registered for the path, implicit
-`HEAD` when `GET` is registered, no implicit `OPTIONS` (ServeMux's
-`matchingMethods` + `slices.Sorted`; pinned in router unit tests too).
-Agreement is required in compatible mode; strict mode's documented
-supersets are listed explicitly per case, not discovered at test time.
-`OPTIONS *` is excluded from the differential — ServeMux alone answers
-400, the standard server intercepts it (`globalOptionsHandler`, 200, no
-`Allow`) unless `DisableGeneralOptionsHandler` is set, and simdhttp's
-`Allow` behavior is asserted directly in router tests. `httptest` is the
-harness; no sockets.
+`HEAD` when `GET` is registered, no implicit `OPTIONS`, and the
+**trailing-slash variant unioned in when the request path lacks a
+slash** (ServeMux's `mux.matchingMethods`, `server.go`, unions `path`
+and `path+"/"`; implicit `HEAD` comes from the tree layer,
+`routing_tree.go`; pinned in router unit tests too). Pattern sets use
+explicit token methods only — method-less ServeMux patterns are
+outside simdhttp's API (router LLD §3) and are never generated or
+compared. Agreement is required in compatible mode; strict mode's
+documented supersets are listed explicitly per case, not discovered
+at test time. `OPTIONS *` is excluded from the differential — ServeMux
+alone answers 400, the standard server intercepts it
+(`globalOptionsHandler`, 200, no `Allow`) unless
+`DisableGeneralOptionsHandler` is set, and simdhttp's `Allow` behavior
+is asserted directly in router tests. `httptest` is the harness; no
+sockets.
 
 ## 6. Disassembly
 
