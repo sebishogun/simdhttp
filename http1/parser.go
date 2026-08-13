@@ -154,10 +154,22 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 			val = val[:len(val)-1]
 		}
 		// A long value is worth the kernel; a short one is scanned inline.
-		// Both reject a control byte other than HTAB.
+		// Both reject a control byte other than HTAB. The kernel reports
+		// the FIRST hit, and a tab is a legal hit -- so the scan continues
+		// past each tab rather than stopping at it, which is G1: a control
+		// byte hiding behind the first tab of a long value was accepted.
+		// The no-tab common case still costs exactly one kernel call.
 		if len(val) >= ctlScanThreshold {
-			if i := simd.IndexAnyOrLess(val, "\x7f", 0x20); i >= 0 && val[i] != '\t' {
-				return 0, ErrMalformed
+			pos := 0
+			for {
+				i := simd.IndexAnyOrLess(val[pos:], "\x7f", 0x20)
+				if i < 0 {
+					break
+				}
+				if val[pos+i] != '\t' {
+					return 0, ErrMalformed
+				}
+				pos += i + 1 // a tab is legal; keep scanning past it
 			}
 		} else {
 			for _, c := range val {
