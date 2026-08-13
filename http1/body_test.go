@@ -97,8 +97,7 @@ func TestBodyFixedOverLimit(t *testing.T) {
 // err spins forever, which is a denial of service reachable from the wire.
 func TestBodyReadNeverZeroNil(t *testing.T) {
 	for _, in := range []string{"", "hello", "hellomore"} {
-		// Chunked joins this table when the chunked reader lands.
-		for _, f := range []Framing{NoBody, FixedLength(0), FixedLength(5)} {
+		for _, f := range []Framing{NoBody, FixedLength(0), FixedLength(5), Chunked} {
 			br := bufio.NewReader(strings.NewReader(in))
 			b := NewBodyReader(br, f, DefaultLimits(Compatible))
 			for i := 0; i < 64; i++ {
@@ -150,5 +149,178 @@ func TestDefaultLimitsMatchLLD(t *testing.T) {
 		if tc.got != tc.want {
 			t.Errorf("%s (%s) = %d, the LLD table says %d", tc.name, tc.profile, tc.got, tc.want)
 		}
+	}
+}
+
+func TestBodyChunkedTrailers(t *testing.T) {
+	br := bufio.NewReader(strings.NewReader(
+		"5\r\nhello\r\n0\r\nX-Trailer: v\r\n\r\n"))
+	b := NewBodyReader(br, Chunked, DefaultLimits(Compatible))
+	all, err := io.ReadAll(b)
+	if err != nil || string(all) != "hello" {
+		t.Fatalf("body %q err %v", all, err)
+	}
+	if b.Trailers().Get("X-Trailer") != "v" {
+		t.Fatalf("trailers %v", b.Trailers())
+	}
+}
+
+func TestBodyChunkedShapes(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   string
+		want string
+		rest string
+	}{
+		{"single", "5\r\nhello\r\n0\r\n\r\n", "hello", ""},
+		{"multi", "3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n", "abcde", ""},
+		{"empty body", "0\r\n\r\n", "", ""},
+		{"uppercase hex", "A\r\n0123456789\r\n0\r\n\r\n", "0123456789", ""},
+		{"lowercase hex", "a\r\n0123456789\r\n0\r\n\r\n", "0123456789", ""},
+		{"extension", "5;name=value\r\nhello\r\n0\r\n\r\n", "hello", ""},
+		{"extension on last", "0;done\r\n\r\n", "", ""},
+		{"pipelined after", "5\r\nhello\r\n0\r\n\r\nGET / HTTP/1.1\r\n\r\n", "hello", "GET / HTTP/1.1\r\n\r\n"},
+		{"trailers then next", "0\r\nX-A: 1\r\n\r\nNEXT", "", "NEXT"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			br := bufio.NewReader(strings.NewReader(c.in))
+			b := NewBodyReader(br, Chunked, DefaultLimits(Compatible))
+			all, err := io.ReadAll(b)
+			if err != nil {
+				t.Fatalf("err %v (read %q)", err, all)
+			}
+			if string(all) != c.want {
+				t.Fatalf("body %q, want %q", all, c.want)
+			}
+			if rest, _ := io.ReadAll(br); string(rest) != c.rest {
+				t.Fatalf("remainder %q, want %q", rest, c.rest)
+			}
+			if b.Consumed() != int64(len(c.in)-len(c.rest)) {
+				t.Fatalf("consumed %d, want %d", b.Consumed(), len(c.in)-len(c.rest))
+			}
+		})
+	}
+}
+
+// Everything a hostile peer can put in a chunked stream. Each must be a typed
+// error, never a panic, never a hang, and never a silently shorter body.
+func TestBodyChunkedRejects(t *testing.T) {
+	big := strings.Repeat("f", 9000)
+	for _, c := range []struct {
+		name string
+		in   string
+		want error
+	}{
+		{"truncated size line", "5", io.ErrUnexpectedEOF},
+		{"truncated data", "5\r\nhel", io.ErrUnexpectedEOF},
+		{"missing final crlf", "5\r\nhello\r\n0\r\n", io.ErrUnexpectedEOF},
+		{"no terminator", "5\r\nhello\r\n", io.ErrUnexpectedEOF},
+		{"bad size", "zz\r\n", ErrBadChunk},
+		{"empty size", "\r\n", ErrBadChunk},
+		{"negative size", "-1\r\n", ErrBadChunk},
+		{"size overflow", "7fffffffffffffff0\r\n", ErrBadChunk},
+		{"data not followed by crlf", "5\r\nhelloXX", ErrBadChunk},
+		{"lone lf after data", "5\r\nhello\n0\r\n\r\n", ErrBadChunk},
+		{"space in size line", "5 5\r\nhello\r\n", ErrBadChunk},
+		{"size line too long", big + "\r\n", ErrChunkLineTooLong},
+		{"control byte in trailer", "0\r\nX-A: \x01\r\n\r\n", ErrMalformed},
+		{"bare lf ending trailer", "0\r\nX-A: 1\n\r\n", ErrMalformed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			br := bufio.NewReader(strings.NewReader(c.in))
+			b := NewBodyReader(br, Chunked, DefaultLimits(Compatible))
+			_, err := io.ReadAll(b)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("err %v, want %v", err, c.want)
+			}
+			// Sticky: a caller that ignores the error gets it again, not bytes.
+			if _, again := b.Read(make([]byte, 4)); !errors.Is(again, c.want) {
+				t.Fatalf("second read %v, want the same error", again)
+			}
+		})
+	}
+}
+
+// Truncating a valid chunked stream at every byte must never panic or hang;
+// every prefix short of the whole thing must fail rather than report a
+// complete body.
+func TestBodyChunkedTruncatedAtEveryByte(t *testing.T) {
+	const full = "5;ext=1\r\nhello\r\n3\r\nabc\r\n0\r\nX-T: v\r\n\r\n"
+	for i := 0; i < len(full); i++ {
+		br := bufio.NewReader(strings.NewReader(full[:i]))
+		b := NewBodyReader(br, Chunked, DefaultLimits(Compatible))
+		if _, err := io.ReadAll(b); err == nil {
+			t.Fatalf("prefix %d (%q) reported a complete body", i, full[:i])
+		}
+	}
+	br := bufio.NewReader(strings.NewReader(full))
+	b := NewBodyReader(br, Chunked, DefaultLimits(Compatible))
+	if all, err := io.ReadAll(b); err != nil || string(all) != "helloabc" {
+		t.Fatalf("whole stream: %q %v", all, err)
+	}
+}
+
+func TestBodyChunkedLimits(t *testing.T) {
+	t.Run("body size", func(t *testing.T) {
+		lim := DefaultLimits(Compatible)
+		lim.MaxBodySize = 4
+		br := bufio.NewReader(strings.NewReader("5\r\nhello\r\n0\r\n\r\n"))
+		b := NewBodyReader(br, Chunked, lim)
+		if _, err := io.ReadAll(b); !errors.Is(err, ErrBodyTooLarge) {
+			t.Fatalf("err %v, want ErrBodyTooLarge", err)
+		}
+	})
+	t.Run("extension length", func(t *testing.T) {
+		lim := DefaultLimits(Compatible)
+		lim.MaxChunkExtensionLen = 8
+		br := bufio.NewReader(strings.NewReader("5;" + strings.Repeat("x", 40) + "\r\nhello\r\n0\r\n\r\n"))
+		b := NewBodyReader(br, Chunked, lim)
+		if _, err := io.ReadAll(b); !errors.Is(err, ErrChunkExtensionTooLong) {
+			t.Fatalf("err %v, want ErrChunkExtensionTooLong", err)
+		}
+	})
+	t.Run("trailer count", func(t *testing.T) {
+		lim := DefaultLimits(Compatible)
+		lim.MaxTrailerCount = 2
+		var sb strings.Builder
+		sb.WriteString("0\r\n")
+		for i := 0; i < 5; i++ {
+			sb.WriteString("X-A: 1\r\n")
+		}
+		sb.WriteString("\r\n")
+		br := bufio.NewReader(strings.NewReader(sb.String()))
+		b := NewBodyReader(br, Chunked, lim)
+		if _, err := io.ReadAll(b); !errors.Is(err, ErrTooManyTrailers) {
+			t.Fatalf("err %v, want ErrTooManyTrailers", err)
+		}
+	})
+	t.Run("trailer value length", func(t *testing.T) {
+		lim := DefaultLimits(Compatible)
+		lim.MaxTrailerValueLen = 8
+		br := bufio.NewReader(strings.NewReader("0\r\nX-A: " + strings.Repeat("v", 40) + "\r\n\r\n"))
+		b := NewBodyReader(br, Chunked, lim)
+		if _, err := io.ReadAll(b); !errors.Is(err, ErrValueTooLarge) {
+			t.Fatalf("err %v, want ErrValueTooLarge", err)
+		}
+	})
+}
+
+// Trailers are only meaningful once the stream ended; before EOF the map must
+// not promise fields that have not arrived.
+func TestBodyTrailersOnlyAfterEOF(t *testing.T) {
+	br := bufio.NewReader(strings.NewReader("5\r\nhello\r\n0\r\nX-T: v\r\n\r\n"))
+	b := NewBodyReader(br, Chunked, DefaultLimits(Compatible))
+	if len(b.Trailers()) != 0 {
+		t.Fatalf("trailers before any read: %v", b.Trailers())
+	}
+	if _, err := b.Read(make([]byte, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Trailers()) != 0 {
+		t.Fatalf("trailers mid-body: %v", b.Trailers())
+	}
+	io.ReadAll(b)
+	if b.Trailers().Get("X-T") != "v" {
+		t.Fatalf("trailers after EOF: %v", b.Trailers())
 	}
 }
