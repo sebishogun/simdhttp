@@ -4,15 +4,19 @@ The gates every simdhttp change and every claim must pass. Current
 baseline verified 2026-08-13 on this machine (Go 1.26.5 toolchain,
 amd64): `go test`, `go vet`, `gofmt`, `go test -race` green; a 15 s
 differential fuzz smoke passed ~3.9 M execs earlier that day. **The
-fuzz smoke is red as of 2026-08-13 evening**: it reached the
-duplicate-Host case (`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n`,
+fuzz smoke is red as of 2026-08-13 evening on this machine**: it
+reached the duplicate-Host case (`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n`,
 wrong.md §3) and fails its one-direction assertion on the documented
-gap G2 — expected and recorded, not a flake; it stays red until Phase
-0 fixes the parser. The gates below cover current code and the
-roadmap's phases; phase-specific gates are marked. All oracle
-verdicts in this document refer to the Go 1.26.5 toolchain actually
-run; go.mod's `go 1.26.2` directive is a module floor, not an oracle
-date.
+gap G2 — expected and recorded, not a flake. The red is local: it
+comes from the campaign cache and a run-written corpus file, and no
+seed is committed, so a fresh clone's fuzz stays green until
+rediscovery; the production plan's Task 3 pins the corpus file
+`testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878` with the
+fix, after which fresh clones replay it at baseline. The gates below
+cover current code and the roadmap's phases; phase-specific gates are
+marked. All oracle verdicts in this document refer to the Go 1.26.5
+toolchain actually run; go.mod's `go 1.26.2` directive is a module
+floor, not an oracle date.
 
 ## 1. Unit and differential tests
 

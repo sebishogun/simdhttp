@@ -78,10 +78,16 @@ what net/http rejects). It held for 35M+ executions in the commit
 history, and on 2026-08-13 it finally reached the duplicate-Host case:
 `0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n` is accepted by simdhttp and
 rejected by net/http ("too many Host headers") — the documented gap G2
-(`docs/wrong.md` §3). Until the roadmap's Phase 0 fixes the parser, the
-fuzz smoke gate is red on exactly this case, and the fuzz cannot pass
-judgment on cases its short seeds never reach either: the long-value
-gap above needs a ≥ 64-byte value, which they do not grow into.
+(`docs/wrong.md` §3). Until the roadmap's Phase 0 fixes the parser,
+the fuzz smoke gate is red on this machine — the input lives in the
+local campaign cache and a run-written corpus file, and **no seed is
+committed** (`git ls-files` has no `testdata`), so a fresh clone's
+fuzz stays green until it rediscovers the case. The production plan's
+Task 3 commits the corpus seed `testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878`
+together with the fix so fresh clones reproduce and cannot regress.
+The fuzz also cannot pass judgment on cases its short seeds never
+reach: the long-value gap above needs a ≥ 64-byte value, which they do
+not grow into.
 
 ## Speed (historical)
 

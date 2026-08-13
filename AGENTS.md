@@ -48,8 +48,13 @@ it, and never amend a committed change without instruction.
 - **G2 red fuzz blocker.** The differential fuzz smoke is red by design
   on the duplicate-Host case (`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n`,
   `docs/wrong.md` §3) until the roadmap's Phase 0 fixes the parser —
-  the production plan's Tasks 1–8 own that fix. A red run is read,
-  never piped; the finding is the deliverable.
+  the production plan's Tasks 1–8 own that fix. The red is local: it
+  replays from the campaign cache and a run-written corpus file, and
+  **no seed is committed** (`git ls-files` has no `testdata`), so a
+  fresh clone's fuzz stays green until rediscovery; plan Task 3
+  commits the seed `testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878`
+  with the fix. A red run is read, never piped; the finding is the
+  deliverable.
 
 ## Read order (required)
 
@@ -159,9 +164,11 @@ Run the gates bare, in this order, and read the output:
 2. `gofmt -l .` and `go vet ./...`
 3. `go test -race ./...`
 4. a fuzz smoke: `go test -fuzz=FuzzParseAgainstNetHTTP -fuzztime=15s .`
-   (currently **red by design**: the fuzz reaches the documented
-   duplicate-Host gap G2 — wrong.md §3, verification.md intro. A red
-   run must be read, not piped; the finding is the deliverable.)
+   (currently **red by design, locally**: the fuzz reaches the
+   documented duplicate-Host gap G2 — wrong.md §3, verification.md
+   intro. A fresh clone has no committed seed and stays green until
+   rediscovery; plan Task 3 pins the seed with the fix. A red run
+   must be read, not piped; the finding is the deliverable.)
 5. Markdown checks: links inside `docs/` resolve, no dead references, no
    trailing-whitespace drift in files touched.
 

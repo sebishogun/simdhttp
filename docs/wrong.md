@@ -90,10 +90,17 @@ The differential fuzz reached the same case on 2026-08-13 evening and
 now fails its one-direction assertion on it: the input
 `0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n` (two empty Host lines on an
 HTTP/1.0 request line) is accepted by simdhttp and rejected by
-net/http. The failure is reproducible from the seed corpus at baseline
-coverage; the fuzz smoke gate is therefore red until Phase 0 fixes the
-parser — a red gate that is itself the documented finding, not a
-launderable flake.
+net/http. On this machine the input is replayed at baseline coverage
+from the **local campaign state** — the `GOCACHE` fuzz cache plus the
+run-written `testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878` —
+so the fuzz smoke is red here. A **fresh clone has neither**: no
+regression corpus file is committed on this branch (verified:
+`git ls-files` contains no `testdata`), so a fresh clone's fuzz stays
+green until a run happens to rediscover the input, or until Phase 0
+ships. The production plan's Task 3 commits the corpus file
+`4cb4ee00bf74f878` together with the duplicate-Host fix, so fresh
+clones replay it at baseline and cannot regress. The red gate is
+itself the documented finding, not a launderable flake.
 
 **Source.** Live differential; Go 1.26.5 `net/http/request.go:1139`;
 `go test -fuzz=FuzzParseAgainstNetHTTP` on 2026-08-13.

@@ -15,9 +15,12 @@ caller owns the bytes and their lifetime (fields alias the buffer); a
 the net/http contract is one-directional with deviations D1–D10
 (`docs/architecture.md` §2.1). The roadmap, production design, and plan
 are the approved target, not shipped. The differential fuzz smoke is
-**red by design** on the duplicate-Host gap G2 (`docs/wrong.md` §3)
-until the roadmap's Phase 0 (production plan Tasks 1–8) fixes the
-parser — read the red, never pipe it.
+**red by design, locally** on the duplicate-Host gap G2 (`docs/wrong.md`
+§3) until the roadmap's Phase 0 (production plan Tasks 1–8) fixes the
+parser — the red replays from the local campaign cache and a
+run-written corpus file, **no seed is committed**, so a fresh clone's
+fuzz stays green until rediscovery; plan Task 3 pins the seed with the
+fix. Read the red, never pipe it.
 
 ## Task scope
 
@@ -86,9 +89,10 @@ amend a committed change without instruction.
 2. `gofmt -l .` and `go vet ./...`
 3. `go test -race ./...`
 4. `go test -fuzz=FuzzParseAgainstNetHTTP -fuzztime=15s .` — currently
-   **red by design** (the fuzz reaches the documented duplicate-Host
-   gap G2; wrong.md §3, verification.md intro). Read the red, never
-   pipe it.
+   **red by design, locally** (the fuzz reaches the documented
+   duplicate-Host gap G2; wrong.md §3, verification.md intro; no seed
+   is committed, so fresh clones stay green until rediscovery — plan
+   Task 3 pins the seed with the fix). Read the red, never pipe it.
 5. Markdown checks: links inside `docs/` resolve; no trailing
    whitespace in touched files.
 6. `git diff --stat` and a full read of the diff; commit message in

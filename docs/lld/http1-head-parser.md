@@ -80,7 +80,9 @@ does ~3.9 M execs without growing a ≥ 64-byte value). G2 is no longer
 just "not asserted": on 2026-08-13 evening the fuzz reached the
 duplicate-Host case (`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n`) and now
 fails its one-direction assertion on it (wrong.md §3) — the fuzz smoke
-gate stays red until Phase 0 closes G2. G3–G5 remain reachable but
+gate stays red **locally** (campaign cache; no seed committed — fresh
+clones stay green until rediscovery or the Phase 0 fix, whose plan
+pins the seed) until Phase 0 closes G2. G3–G5 remain reachable but
 unasserted in the corpus — no duplicate Host, no control-byte target,
 no double Content-Length.
 
