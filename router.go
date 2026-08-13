@@ -30,6 +30,7 @@ type Router struct {
 	roots      map[string]*node // keyed by the pattern's host; "" matches any
 	methodIDs  map[string]int   // custom methods only; IDs from numCommonMethods
 	numMethods int
+	allowAll   string // every method in the table, for asterisk-form OPTIONS
 }
 
 type registration struct {
@@ -104,11 +105,33 @@ func (r *Router) Build() error {
 			r.errs = append(r.errs, err)
 		}
 	}
+	r.allowAll = r.allMethodNames()
 	r.built = true
 	if len(r.errs) > 0 {
 		return errors.Join(r.errs...)
 	}
 	return nil
+}
+
+// allMethodNames is the Allow value for an asterisk-form OPTIONS: every method
+// the table registers anywhere, with the implicit HEAD that GET implies.
+func (r *Router) allMethodNames() string {
+	seen := map[string]bool{}
+	for _, reg := range r.regs {
+		if reg.method == "" {
+			continue
+		}
+		seen[reg.method] = true
+		if reg.method == "GET" {
+			seen["HEAD"] = true
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for m := range seen {
+		names = append(names, m)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // MustBuild builds and panics on error. It is the only panic path for a bad
@@ -258,6 +281,13 @@ var methodTokenChar = func() (t [128]bool) {
 // chain rather than a hash: they are what almost every request uses, and a map
 // lookup per request is a cost every route would pay for a rare case.
 const numCommonMethods = 9
+
+// The three IDs the serving path names directly.
+const (
+	methodIDGet     = 0
+	methodIDHead    = 1
+	methodIDOptions = 6
+)
 
 func commonMethodID(m string) int {
 	switch len(m) {
@@ -421,25 +451,124 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	path := escapedPath(req)
+	if req.Method == "OPTIONS" && (path == "*" || req.RequestURI == "*") {
+		// RFC 9110 asterisk-form: a request about the server rather than a
+		// resource, so it never reaches the trie. A standard http.Server
+		// answers it before the handler unless DisableGeneralOptionsHandler
+		// is set, which is why this is reachable at all.
+		w.Header().Set("Allow", r.allowAll)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if path == "" || path[0] != '/' {
 		http.NotFound(w, req)
 		return
 	}
 	var params [maxInlineParams]paramKV
 	n, np := matchSegments(root, path[1:], &params, 0)
-	if n == nil {
-		http.NotFound(w, req)
-		return
-	}
 	id := r.methodID(req.Method)
-	if id < 0 || id >= len(n.handlers) || n.handlers[id] == nil {
+	if n == nil {
+		r.serveNoRoute(w, req, root, path, id)
+		return
+	}
+	if id >= 0 && id < len(n.handlers) && n.handlers[id] != nil {
+		for i := 0; i < np; i++ {
+			req.SetPathValue(params[i].name, params[i].value)
+		}
+		n.handlers[id].ServeHTTP(w, req)
+		return
+	}
+	// HEAD is served by GET when no HEAD pattern exists. The handler must not
+	// write a body; that is the standard contract, not something the router
+	// can enforce without wrapping the ResponseWriter.
+	if id == methodIDHead && n.handlers[methodIDGet] != nil {
+		for i := 0; i < np; i++ {
+			req.SetPathValue(params[i].name, params[i].value)
+		}
+		n.handlers[methodIDGet].ServeHTTP(w, req)
+		return
+	}
+	r.methodNotAllowed(w, req, root, path, n)
+}
+
+// serveNoRoute handles a path with no matching node: the asterisk-form
+// OPTIONS, the trailing-slash variant, or a plain 404.
+func (r *Router) serveNoRoute(w http.ResponseWriter, req *http.Request, root *node, path string, id int) {
+	if !r.RedirectTrailingSlash || strings.HasSuffix(path, "/") {
 		http.NotFound(w, req)
 		return
 	}
-	for i := 0; i < np; i++ {
-		req.SetPathValue(params[i].name, params[i].value)
+	slash := lookupPath(root, path+"/")
+	if slash == nil {
+		http.NotFound(w, req)
+		return
 	}
-	n.handlers[id].ServeHTTP(w, req)
+	if id >= 0 && id < len(slash.handlers) && slash.handlers[id] != nil {
+		target := path + "/"
+		if req.URL.RawQuery != "" {
+			target += "?" + req.URL.RawQuery
+		}
+		http.Redirect(w, req, target, http.StatusTemporaryRedirect)
+		return
+	}
+	// The slash form exists but has no pattern for this method. Redirecting
+	// would send the client to a URL that refuses it just the same, so the
+	// answer is the 405 that URL would give.
+	w.Header().Set("Allow", allowValue(nil, slash))
+	http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
+}
+
+// methodNotAllowed answers a path that matched with methods the request did
+// not use. The Allow value unions the trailing-slash variant when the request
+// path lacks one, which is what ServeMux's matchingMethods does.
+func (r *Router) methodNotAllowed(w http.ResponseWriter, req *http.Request, root *node, path string, n *node) {
+	var slash *node
+	if !strings.HasSuffix(path, "/") {
+		slash = lookupPath(root, path+"/")
+	}
+	w.Header().Set("Allow", allowValue(n, slash))
+	http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
+}
+
+// allowValue builds the Allow header: the registered methods sorted
+// lexicographically, plus an implicit HEAD wherever GET is registered. There
+// is no implicit OPTIONS -- ServeMux does not add one, and a router that
+// advertised a method it would then refuse would be worse than silent. This is
+// the cold path and may allocate.
+func allowValue(a, b *node) string {
+	names := make([]string, 0, 8)
+	add := func(n *node) {
+		if n == nil {
+			return
+		}
+		for _, m := range n.methods {
+			names = append(names, m)
+			if m == "GET" {
+				names = append(names, "HEAD")
+			}
+		}
+	}
+	add(a)
+	add(b)
+	sort.Strings(names)
+	out := names[:0]
+	for i, m := range names {
+		if i == 0 || m != names[i-1] {
+			out = append(out, m)
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+// lookupPath finds a node without binding parameters, for the Allow and
+// trailing-slash decisions.
+func lookupPath(root *node, path string) *node {
+	if path == "" || path[0] != '/' {
+		return nil
+	}
+	var scratch [maxInlineParams]paramKV
+	n, _ := matchSegments(root, path[1:], &scratch, 0)
+	return n
 }
 
 // escapedPath returns the path in its on-the-wire form so each segment is
@@ -483,7 +612,10 @@ func matchSegments(n *node, rest string, params *[maxInlineParams]paramKV, np in
 			}
 		}
 	}
-	if n.param != nil {
+	if n.param != nil && dec != "" {
+		// A parameter does not match an empty segment. Probed on Go 1.26.5:
+		// ServeMux answers 404 for "/a/" against "GET /a/{x}", so matching it
+		// here would route a request the origin would have refused.
 		pnp := np
 		if pnp < maxInlineParams {
 			params[pnp] = paramKV{n.paramName, dec}

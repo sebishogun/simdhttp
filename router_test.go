@@ -371,3 +371,194 @@ func TestPatternsCopiedAtRegistration(t *testing.T) {
 		t.Fatalf("body %q", got)
 	}
 }
+
+// ---- Task 14: 405, HEAD, OPTIONS, trailing slash ----
+
+// The Allow header is built ServeMux-exactly: registered methods sorted
+// lexicographically, an implicit HEAD whenever GET is registered, and no
+// implicit OPTIONS.
+func TestAllowHeader(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		register [][2]string
+		method   string
+		path     string
+		want     string
+	}{
+		{"get implies head", [][2]string{{"GET", "/a"}}, "POST", "/a", "GET, HEAD"},
+		{"get and post", [][2]string{{"GET", "/a"}, {"POST", "/a"}}, "DELETE", "/a", "GET, HEAD, POST"},
+		{"no get, no implicit head", [][2]string{{"POST", "/a"}}, "GET", "/a", "POST"},
+		{"no implicit options", [][2]string{{"PUT", "/a"}}, "GET", "/a", "PUT"},
+		{"explicit head only", [][2]string{{"HEAD", "/a"}}, "GET", "/a", "HEAD"},
+		{"custom methods sort in", [][2]string{{"MKCOL", "/a"}, {"REPORT", "/a"}}, "GET", "/a", "MKCOL, REPORT"},
+		{"custom with common", [][2]string{{"REPORT", "/a"}, {"GET", "/a"}}, "POST", "/a", "GET, HEAD, REPORT"},
+		// ServeMux unions the trailing-slash variant when the request path has
+		// no slash: mux.matchingMethods looks up both path and path+"/".
+		{"slash variant unioned", [][2]string{{"POST", "/users/"}}, "GET", "/users", "POST"},
+		{"both forms unioned", [][2]string{{"GET", "/users"}, {"POST", "/users/"}}, "DELETE", "/users", "GET, HEAD, POST"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := New()
+			for _, reg := range c.register {
+				r.HandleFunc(reg[0], reg[1], noop)
+			}
+			if err := r.Build(); err != nil {
+				t.Fatal(err)
+			}
+			rec := serve(t, r, c.method, c.path)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("code %d, want 405", rec.Code)
+			}
+			if got := rec.Header().Get("Allow"); got != c.want {
+				t.Fatalf("Allow %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// A path no pattern covers is 404, not 405: there is no method that would have
+// worked, so an Allow header would name nothing.
+func TestUnknownPathIs404NotMethodNotAllowed(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "/a", noop)
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	rec := serve(t, r, "POST", "/nowhere")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("code %d, want 404", rec.Code)
+	}
+	if got := rec.Header().Get("Allow"); got != "" {
+		t.Fatalf("Allow %q on a 404", got)
+	}
+}
+
+func TestHeadServedByGet(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "/a", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("from-get")) })
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	if got := serve(t, r, "HEAD", "/a").Body.String(); got != "from-get" {
+		t.Fatalf("HEAD body %q, want the GET handler's", got)
+	}
+}
+
+func TestExplicitHeadWins(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "/a", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("get")) })
+	r.HandleFunc("HEAD", "/a", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("head")) })
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	if got := serve(t, r, "HEAD", "/a").Body.String(); got != "head" {
+		t.Fatalf("HEAD body %q", got)
+	}
+}
+
+// OPTIONS * is answered by the router with Allow. A standard http.Server
+// intercepts it before the handler unless DisableGeneralOptionsHandler is set,
+// so this calls ServeHTTP directly, and ServeMux is not the oracle here: it
+// answers 400 (probed on Go 1.26.5).
+func TestOptionsAsterisk(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "/a", noop)
+	r.HandleFunc("POST", "/b", noop)
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("OPTIONS", "http://example.com/", nil)
+	req.URL.Path = "*"
+	req.RequestURI = "*"
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Allow"); got != "GET, HEAD, POST" {
+		t.Fatalf("Allow %q", got)
+	}
+}
+
+func TestExplicitOptionsPatternWins(t *testing.T) {
+	r := New()
+	r.HandleFunc("OPTIONS", "/a", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("mine")) })
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	if got := serve(t, r, "OPTIONS", "/a").Body.String(); got != "mine" {
+		t.Fatalf("body %q", got)
+	}
+}
+
+// Trailing slash, compatible mode: 307 to the slash form when the slash
+// variant has a pattern for the request method, 405 with the unioned Allow
+// when it does not. Both probed against ServeMux on Go 1.26.5.
+func TestTrailingSlashRedirect(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "/users/", noop)
+	r.HandleFunc("POST", "/items/", noop)
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	rec := serve(t, r, "GET", "/users")
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("code %d, want 307", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/users/" {
+		t.Fatalf("Location %q", got)
+	}
+	// The slash variant exists but has no GET: 405, not a redirect to a form
+	// that would also refuse the request.
+	rec = serve(t, r, "GET", "/items")
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("code %d, want 405", rec.Code)
+	}
+	if got := rec.Header().Get("Allow"); got != "POST" {
+		t.Fatalf("Allow %q, want POST", got)
+	}
+}
+
+func TestTrailingSlashDisabled(t *testing.T) {
+	r := New()
+	r.RedirectTrailingSlash = false
+	r.HandleFunc("GET", "/users/", noop)
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	if code := serve(t, r, "GET", "/users").Code; code != http.StatusNotFound {
+		t.Fatalf("code %d, want 404 with redirects off", code)
+	}
+}
+
+// Both forms registered: each matches its own path exactly, with no merging
+// and no redirect.
+func TestBothSlashFormsRegistered(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "/users", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("bare")) })
+	r.HandleFunc("GET", "/users/", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("slash")) })
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	if got := serve(t, r, "GET", "/users").Body.String(); got != "bare" {
+		t.Fatalf("/users -> %q", got)
+	}
+	if got := serve(t, r, "GET", "/users/").Body.String(); got != "slash" {
+		t.Fatalf("/users/ -> %q", got)
+	}
+}
+
+// The 405 and redirect paths may allocate; the matched path must not. This
+// re-asserts it now that those branches exist.
+func TestMatchStillAllocatesNothing(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "/api/{v}/x", noop)
+	r.HandleFunc("POST", "/api/{v}/x", noop)
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/api/1/x", nil)
+	if n := testing.AllocsPerRun(200, func() { r.ServeHTTP(nilWriter{}, req) }); n != 0 {
+		t.Fatalf("%v allocations on the matched path", n)
+	}
+}
