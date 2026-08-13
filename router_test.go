@@ -562,3 +562,115 @@ func TestMatchStillAllocatesNothing(t *testing.T) {
 		t.Fatalf("%v allocations on the matched path", n)
 	}
 }
+
+// ---- Task 15: host patterns ----
+
+func TestHostPatterns(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "api.example.com/v1/{id}", func(w http.ResponseWriter, req *http.Request) {
+		w.Write([]byte("api id=" + req.PathValue("id")))
+	})
+	r.HandleFunc("GET", "/v1/{id}", func(w http.ResponseWriter, req *http.Request) {
+		w.Write([]byte("any id=" + req.PathValue("id")))
+	})
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ host, want string }{
+		{"api.example.com", "api id=7"},
+		{"api.example.com:443", "api id=7"}, // the port is not part of the match
+		{"API.EXAMPLE.COM", "api id=7"},     // host comparison is case-insensitive
+		{"other.example.com", "any id=7"},   // falls back to the hostless pattern
+		{"", "any id=7"},                    // HTTP/1.0 with no Host
+	} {
+		req := httptest.NewRequest("GET", "/v1/7", nil)
+		req.Host = c.host
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if got := rec.Body.String(); got != c.want {
+			t.Errorf("Host %q -> %q, want %q", c.host, got, c.want)
+		}
+	}
+}
+
+// A host pattern with no hostless counterpart answers only its own host.
+func TestHostPatternDoesNotLeak(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "api.example.com/only", noop)
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/only", nil)
+	req.Host = "other.example.com"
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("code %d for a foreign host, want 404", rec.Code)
+	}
+}
+
+// A request with no Host matches hostless patterns only: an HTTP/1.0 client
+// named no authority, so answering a host-scoped route would be a guess.
+func TestNoHostMatchesHostlessOnly(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "api.example.com/x", noop)
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Host = ""
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("code %d, want 404", rec.Code)
+	}
+}
+
+// The same path under two hosts is not a conflict; under one host twice is.
+func TestHostScopedConflicts(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "a.example.com/x", noop)
+	r.HandleFunc("GET", "b.example.com/x", noop)
+	r.HandleFunc("GET", "/x", noop)
+	if err := r.Build(); err != nil {
+		t.Fatalf("distinct hosts reported a conflict: %v", err)
+	}
+	r2 := New()
+	r2.HandleFunc("GET", "a.example.com/x", noop)
+	r2.HandleFunc("GET", "a.example.com/x", noop)
+	if err := r2.Build(); err == nil {
+		t.Fatal("duplicate within one host accepted")
+	}
+}
+
+// Registering the host in mixed case must match the same requests as lower
+// case, or a table would silently depend on how it was typed.
+func TestHostPatternCaseInsensitive(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "API.Example.COM/x", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("hit")) })
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Host = "api.example.com"
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if got := rec.Body.String(); got != "hit" {
+		t.Fatalf("body %q", got)
+	}
+}
+
+// A host-scoped table must not cost the hostless path an allocation.
+func TestHostMatchAllocatesNothing(t *testing.T) {
+	r := New()
+	r.HandleFunc("GET", "api.example.com/v1/{id}", noop)
+	r.HandleFunc("GET", "/v1/{id}", noop)
+	if err := r.Build(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/v1/7", nil)
+	req.Host = "api.example.com:443"
+	if n := testing.AllocsPerRun(200, func() { r.ServeHTTP(nilWriter{}, req) }); n != 0 {
+		t.Fatalf("%v allocations matching a host pattern", n)
+	}
+}

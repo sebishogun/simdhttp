@@ -31,6 +31,7 @@ type Router struct {
 	methodIDs  map[string]int   // custom methods only; IDs from numCommonMethods
 	numMethods int
 	allowAll   string // every method in the table, for asterisk-form OPTIONS
+	hostRoutes bool   // any host-scoped pattern registered
 }
 
 type registration struct {
@@ -106,6 +107,12 @@ func (r *Router) Build() error {
 		}
 	}
 	r.allowAll = r.allMethodNames()
+	for host := range r.roots {
+		if host != "" {
+			r.hostRoutes = true
+			break
+		}
+	}
 	r.built = true
 	if len(r.errs) > 0 {
 		return errors.Join(r.errs...)
@@ -181,7 +188,10 @@ func parsePattern(method, pattern string) (parsedRoute, error) {
 	}
 	path := pattern
 	if i := strings.IndexByte(pattern, '/'); i > 0 {
-		p.host, path = pattern[:i], pattern[i:]
+		// Lower-cased once here rather than per request: a host is
+		// case-insensitive, and a table that behaved differently depending on
+		// how its patterns were typed would be a trap.
+		p.host, path = strings.ToLower(pattern[:i]), pattern[i:]
 	}
 	if path == "" || path[0] != '/' {
 		return p, fmt.Errorf("simdhttp: pattern %q has no leading slash", pattern)
@@ -445,11 +455,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "simdhttp: router used before Build", http.StatusInternalServerError)
 		return
 	}
-	root := r.roots[""]
-	if root == nil {
-		http.NotFound(w, req)
-		return
-	}
 	path := escapedPath(req)
 	if req.Method == "OPTIONS" && (path == "*" || req.RequestURI == "*") {
 		// RFC 9110 asterisk-form: a request about the server rather than a
@@ -465,7 +470,25 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	var params [maxInlineParams]paramKV
-	n, np := matchSegments(root, path[1:], &params, 0)
+	var n *node
+	var np int
+	root := r.hostRoot(req.Host)
+	if root != nil {
+		n, np = matchSegments(root, path[1:], &params, 0)
+	}
+	if n == nil && root != r.roots[""] {
+		// A host-scoped table that does not answer falls back to the patterns
+		// registered for any host. The reverse never happens: a request whose
+		// authority names one host is not served by another host's routes.
+		root = r.roots[""]
+		if root != nil {
+			n, np = matchSegments(root, path[1:], &params, 0)
+		}
+	}
+	if root == nil {
+		http.NotFound(w, req)
+		return
+	}
 	id := r.methodID(req.Method)
 	if n == nil {
 		r.serveNoRoute(w, req, root, path, id)
@@ -569,6 +592,25 @@ func lookupPath(root *node, path string) *node {
 	var scratch [maxInlineParams]paramKV
 	n, _ := matchSegments(root, path[1:], &scratch, 0)
 	return n
+}
+
+// hostRoot returns the trie for a request's authority, or the hostless trie.
+// The host is compared without its port and case-insensitively; a request with
+// no Host matches hostless patterns only, because an HTTP/1.0 client named no
+// authority and picking one for it would be a guess.
+func (r *Router) hostRoot(host string) *node {
+	if !r.hostRoutes || host == "" {
+		return r.roots[""]
+	}
+	if i := strings.LastIndexByte(host, ':'); i >= 0 && strings.IndexByte(host[i:], ']') < 0 {
+		host = host[:i] // strip the port, leaving a bracketed IPv6 literal alone
+	}
+	// ToLower returns the input unchanged when it already is lower case, so an
+	// ordinary request pays no allocation for this.
+	if n := r.roots[strings.ToLower(host)]; n != nil {
+		return n
+	}
+	return r.roots[""]
 }
 
 // escapedPath returns the path in its on-the-wire form so each segment is
