@@ -82,3 +82,16 @@ func TestParseAgainstNetHTTP(t *testing.T) {
 		}
 	}
 }
+
+func TestDuplicateHostRejected(t *testing.T) {
+	for _, head := range []string{
+		"GET / HTTP/1.1\r\nHost: a.com\r\nHost: a.com\r\n\r\n", // identical too
+		"GET / HTTP/1.1\r\nHost: a.com\r\nHost: b.com\r\n\r\n",
+		"GET / HTTP/1.1\r\nHost: a.com\r\nHOST:\r\n\r\n",
+	} {
+		var req Request
+		if _, err := Parse(&req, []byte(head), Compatible); err == nil {
+			t.Fatalf("%q: duplicate Host accepted", head)
+		}
+	}
+}

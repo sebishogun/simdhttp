@@ -108,6 +108,7 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 	}
 
 	req.Headers = req.Headers[:0]
+	hostSeen := false
 	block := b[nl+1:]
 	// One pass finds every line end in the header block; the walk below
 	// splits on the index instead of scanning for each '\n' separately,
@@ -146,6 +147,16 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 		if !tokenOnly(name) {
 			return 0, ErrMalformed
 		}
+		// One Host, exactly -- net/http's reader answers "too many Host
+		// headers" to a second one, and a parser in front of an origin that
+		// accepts two is the request-smuggling seam the differential fuzz
+		// found (docs/wrong.md, the G2 record; the corpus seed pins it).
+		if bytes.EqualFold(name, hostHeader) {
+			if hostSeen {
+				return 0, ErrMalformed
+			}
+			hostSeen = true
+		}
 		val := line[colon+1:]
 		for len(val) > 0 && (val[0] == ' ' || val[0] == '\t') {
 			val = val[1:]
@@ -183,6 +194,10 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 	// Ran out of line ends before the blank line: the head is incomplete.
 	return 0, ErrIncomplete
 }
+
+// hostHeader is the Host field name for the duplicate check; a package
+// []byte of a constant, so EqualFold takes no per-call conversion.
+var hostHeader = []byte("Host")
 
 // tokenSet is RFC 9110's token alphabet.
 const tokenSet = "!#$%&'*+-.^_`|~0123456789" +
