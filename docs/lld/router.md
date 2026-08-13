@@ -40,14 +40,30 @@ Pattern grammar (method is separate):
 ```
 pattern  = [host "/"] path
 path     = "/" segment *( "/" segment )        ; leading "/" required
-segment  = literal | "{" name "}" | "*"        ; wildcard = final segment only
+segment  = literal | "{" name "}" | "*" | "{$}"  ; "*" and "{$}" final only
 host     = literal [ "." literal ]             ; no params in host
 ```
 
 - `Handle("GET", "/users/{id}", h)` — one segment, param `id`.
 - `Handle("GET", "/files/*", h)` — `*` must be the entire final segment;
-  matches the rest of the path including further slashes
+  matches one or more remaining segments including their slashes
   (`req.PathValue("*")` = remainder, URL-decoded once).
+- **A pattern ending in `/` is a subtree**, equivalent to `*` with no
+  name bound: `/users/` matches `/users/`, `/users/x` and `/users/x/y`,
+  and `/` therefore matches every path. This is ServeMux's rule, probed
+  on the toolchain oracle and pinned by the differential; the earlier
+  exact-match reading in this document was wrong and would have 404ed
+  the most common ServeMux idiom.
+- `{$}` is the end-of-path marker: `/users/{$}` matches `/users/` and
+  nothing below it. It is the exact-match form the subtree rule
+  displaces.
+- `{name}` matches exactly one **non-empty** segment. Probed: ServeMux
+  answers 404 for `/a/` against `GET /a/{x}`.
+- Request paths are **cleaned before matching** (`//`, `/./`, `/../`)
+  and an unclean path is answered with a 307 to its clean form rather
+  than matched, so `/a//b` cannot reach a handler `/a/b` would not.
+  `CONNECT` is exempt, as in ServeMux, because it names an authority
+  rather than a path.
 - Literals are matched byte-exact after a single URL-decode of each
   segment; `%2F` inside a segment decodes to `/` and is treated
   as a literal slash character within the segment — the same choice
@@ -67,12 +83,23 @@ At a given path position, in order:
 
 Full precedence: a pattern wins if it matches with a *more specific*
 segment at the first position where they differ; a static segment is
-more specific than a param, a param than a wildcard; otherwise the
-longer literal prefix wins. Ties are build errors — `Build` rejects
-ambiguous registrations (two patterns that could match the same request
-with equal precedence) instead of silently choosing one, matching
-`ServeMux`'s conflict detection but stricter: a conflict is always a
-`Build` error, never a runtime panic.
+more specific than a param, a param than a wildcard.
+
+Conflicts are decided by the same relationship algebra ServeMux uses.
+Two patterns are compared position by position, each position yielding
+equivalent / more-general / more-specific / disjoint, and the results
+combine: one position saying more-general and another saying
+more-specific means **neither contains the other**, so some request
+matches both with nothing to choose between them. That case, and exact
+equivalence, are `Build` errors — never a runtime panic, which is the
+one deliberate difference from ServeMux, and never a silent choice.
+
+Detection is pairwise in principle. To keep a hundred-thousand-route
+table from costing a quadratic `Build`, patterns are grouped by method
+and host and then split on the literal at each position; patterns that
+are not a literal at that position (a param, a wildcard, or a pattern
+that has ended) can match alongside any bucket and so join all of them.
+Measured: 100k routes build in 129 ms.
 
 405 and method handling:
 
@@ -132,10 +159,11 @@ only.
 
 ## 5. Trailing slash
 
-- `/users` and `/users/` are distinct routes unless:
-  - both are registered — then each matches its own form exactly
-    (no merging);
-  - only `/users/` exists and a request for `/users` arrives — the
+- `/users` matches that path exactly; `/users/` matches that path and
+  everything below it (§2). Registering both is not a conflict: the
+  bare form is more specific than the subtree at the position where
+  they differ, so `/users` takes `/users` and `/users/` takes the rest.
+- A request for `/users` when only `/users/` exists — the
     router redirects with a **307 Temporary Redirect** to `/users/`
     in compatible mode, **but only when the slash variant has a
     pattern matching the request method** (ServeMux's
@@ -158,13 +186,36 @@ Compiled form: a segment trie, concrete nodes, no interfaces.
 
 ```
 type node struct {
-    static   map[string]*node        // or sorted slice for small fan-out
-    param    *node                   // {name}
-    wildcard *node                   // *
-    handlers [maxMethodID]*handlerRef // nil = no method
-    host     string                  // "" = any
+    static   map[string]*node   // literal segment
+    single   *node              // {name}: one non-empty segment
+    multi    *node              // "*" or a trailing slash: the rest
+    handlers []*handlerEntry    // by method ID; nil = not registered
+    methods  []string           // sorted, for the Allow value
+}
+
+type handlerEntry struct {
+    h     http.Handler
+    names []string // wildcard names in match order; "" binds nothing
 }
 ```
+
+Wildcard **names live on the entry, not the node**, because two methods
+may register the same shape with different names — `GET /a/{x}` and
+`POST /a/{y}` reach the same node, and binding both to whichever was
+registered first would be wrong.
+
+Hosts are **separate tries** keyed by the pattern's host rather than a
+field on the node, so a host-scoped table is a lookup rather than a
+per-node comparison; a request falls back to the hostless trie when its
+own host has no match (§4).
+
+**Matching is per method.** ServeMux keys its tree by method first, so
+the most specific pattern is chosen among that method's patterns. The
+walk therefore carries the request's method ID and accepts a terminal
+node only if it serves that method; choosing the most specific pattern
+overall and then checking its method answers 405 for requests the
+reference serves. The 405/`Allow` path then re-walks without the filter
+and unions the methods of **every** matching pattern.
 
 `ServeHTTP` walk: per segment, check static (map lookup on the decoded
 segment — one decode pass, §2), then param, then wildcard; at the leaf,
