@@ -160,6 +160,7 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 	hostCount := 0
 	hostNonEmpty := false
 	clSeen := false
+	teSeen := false
 	block := b[nl+1:]
 	// One pass finds every line end in the header block; the walk below
 	// splits on the index instead of scanning for each '\n' separately,
@@ -275,6 +276,25 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 			clSeen = true
 			req.ContentLengthLines = append(req.ContentLengthLines, val)
 		} else if bytes.EqualFold(name, teHeader) {
+			// A second Transfer-Encoding is rejected here, not deferred to the
+			// framing table: net/http answers "too many transfer encodings", so
+			// accepting it at head level would be the more-permissive-than-origin
+			// seam again. Parity, not deviation -- and it keeps
+			// TransferEncodingLines at one entry, as the CL rule does.
+			if teSeen {
+				return 0, ErrMalformed
+			}
+			teSeen = true
+			// The encoding itself is checked here, not deferred: net/http
+			// answers "unsupported transfer encoding" for anything but a lone
+			// chunked -- empty, gzip, identity, or a list -- so a head parser
+			// that accepted them would be more permissive than the origin it
+			// fronts. ValidTransferEncoding is the single implementation; the
+			// framing table (Phase 1) reads the same function, so there is no
+			// second opinion for a smuggled request to exploit.
+			if !ValidTransferEncoding(val) {
+				return 0, ErrMalformed
+			}
 			req.TransferEncodingLines = append(req.TransferEncodingLines, val)
 		}
 		req.Headers = append(req.Headers, Header{Name: name, Value: val})
@@ -308,6 +328,17 @@ func validTarget(t []byte) bool {
 func isHex(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
+
+// ValidTransferEncoding reports whether a Transfer-Encoding field value is
+// one this parser will frame: exactly "chunked", case-insensitive. Go's
+// reader rejects every other spelling it is offered -- an empty value, a
+// bare "gzip" or "identity", and any list including "gzip, chunked" -- and
+// the framing table shares this function so both layers hold one opinion.
+func ValidTransferEncoding(v []byte) bool {
+	return bytes.EqualFold(v, chunkedToken)
+}
+
+var chunkedToken = []byte("chunked")
 
 // validHost rejects the authority forms net/http's httpguts misses: a
 // space/tab/control/comma anywhere, and unbalanced brackets (D9). Stricter

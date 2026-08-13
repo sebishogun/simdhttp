@@ -185,3 +185,11 @@ func TestLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestDuplicateTransferEncoding(t *testing.T) {
+	var req Request
+	head := "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n"
+	if _, err := Parse(&req, []byte(head), Compatible); err == nil {
+		t.Fatal("duplicate Transfer-Encoding accepted")
+	}
+}

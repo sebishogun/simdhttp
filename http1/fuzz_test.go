@@ -21,6 +21,15 @@ func FuzzParseAgainstNetHTTP(f *testing.F) {
 		"POST /a HTTP/1.1\r\nH: v\r\nH2:  w \r\n\r\n",
 		"bad", "GET\r\n\r\n", "\r\n",
 		"0 0 0\r\n\r\n", "0 * HTTP/0.0\r\n\n",
+		// G1: a control byte behind a tab in a value past ctlScanThreshold.
+		"GET / HTTP/1.1\r\nHost: h\r\nX: " + strings.Repeat("v", 70) + "\t\x00\r\n\r\n",
+		// G2 and the Host rows.
+		"GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n",
+		"GET / HTTP/1.1\r\nHost: a.com,b.com\r\n\r\n",
+		"GET / HTTP/1.1\r\nHost: [::1\r\n\r\n",
+		// Framing pairs.
+		"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n",
+		"POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n",
 	} {
 		f.Add([]byte(s))
 	}

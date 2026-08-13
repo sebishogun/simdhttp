@@ -56,38 +56,40 @@ Go — bare-LF line endings, spaces inside field names, obs-fold
 continuations, and the future Host/CL policy — each deviation is
 enumerated in the canonical list, [docs/architecture.md §2.1](docs/architecture.md).
 
-## Known safety and compatibility gaps
+## Safety and compatibility: `http1` vs the root package
 
-Verified against the source and net/http on 2026-08-13 (Go 1.26.5). None of
-these are fixed yet; the current parser is a parsing primitive, not a
-hardened front door. Do not put this parser in front of an origin without
-addressing them.
+Phase 0 of the production plan shipped `simdhttp/http1` — the hardened
+parser. **New work should use `http1.Parse`**; the root `Parse` is
+unchanged for compatibility and still carries every gap below.
 
-| gap | what happens today | Go 1.26.5 |
+`http1.Parse(req, b, profile)` takes a profile (`Compatible` mirrors
+net/http's verdicts, `Strict` is the documented superset) and closes the
+Phase 0 gaps:
+
+| gap | root package | `http1` |
 |---|---|---|
-| Long header-value control bytes | a value ≥ 64 bytes whose first HTAB precedes a control byte (NUL, DEL, …) slips the control scan — the kernel returns the tab, the guard passes, the scan stops | rejects |
-| Duplicate `Host` | any second `Host` line is accepted, even an identical one | rejects ("too many Host headers") |
-| Missing / malformed `Host` | an HTTP/1.1 head with no `Host`, an empty `Host:`, or a malformed host is accepted | server rejects missing and malformed Host; a present-but-empty `Host:` is accepted |
-| Request-target controls and escapes | NUL, DEL and other control bytes, and invalid percent-escapes (`%zz`, `%2`), are accepted in the target | rejects (net/url control-character and escape checks) |
-| `Content-Length` framing | `Content-Length` + `Transfer-Encoding` together, and any duplicate `Content-Length`, are accepted | `ReadRequest` and the server both accept CL+TE by deleting `Content-Length` and framing chunked; rejects *differing* duplicate `Content-Length`, dedupes identical ones |
-| Body / chunked / trailers | not parsed at all — no framing, no `BodyReader` | full framing |
-| Limits | none: unbounded head size, header count, value length | server head bounded by `MaxHeaderBytes` (default 1 MiB) |
+| Long header-value control bytes | a value ≥ 64 bytes whose first HTAB precedes a control byte slips the scan | **rejected** — the scan continues past each tab; the no-tab case still costs one kernel call |
+| Duplicate `Host` | accepted, even an identical one | **rejected** (parity: "too many Host headers") |
+| Missing / malformed `Host` | accepted | **rejected** — 1.1 requires a non-empty Host; the format check is stricter than `httpguts` on commas and bracket balance (D9), and a present-but-empty `Host:` counts as missing (D5) |
+| Request-target controls and escapes | accepted | **rejected** — control bytes and non-hex percent-escapes (D8, parity with net/url) |
+| Duplicate `Content-Length` | accepted | **rejected** in both profiles — stricter than Go, which dedupes identical values (D6) |
+| `Transfer-Encoding` | accepted unvalidated | duplicate **rejected** (parity), and the value must be exactly `chunked` — empty, `gzip`, `identity` and lists are rejected, as net/http rejects them. `ValidTransferEncoding` is the single implementation the framing table will share |
+| Limits | none | head size, request line, header count and value length per profile, each with its own typed error, never `ErrIncomplete` |
+| Body / chunked / trailers | not parsed | Phase 1 |
 
-The differential fuzz asserts the one-direction contract (never accept
-what net/http rejects). It held for 35M+ executions in the commit
-history, and on 2026-08-13 it finally reached the duplicate-Host case:
-`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n` is accepted by simdhttp and
-rejected by net/http ("too many Host headers") — the documented gap G2
-(`docs/wrong.md` §3). Until the roadmap's Phase 0 fixes the parser,
-the fuzz smoke gate is red on this machine — the input lives in the
-local campaign cache and a run-written corpus file, and **no seed is
-committed** (`git ls-files` has no `testdata`), so a fresh clone's
-fuzz stays green until it rediscovers the case. The production plan's
-Task 3 commits the corpus seed `testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878`
-together with the fix so fresh clones reproduce and cannot regress.
-The fuzz also cannot pass judgment on cases its short seeds never
-reach: the long-value gap above needs a ≥ 64-byte value, which they do
-not grow into.
+`CL` + `TE` together still parses at head level: that verdict belongs to
+the framing decision table (Phase 1, deviation D7), and the head exposes
+`ContentLengthLines` / `TransferEncodingLines` for it.
+
+The differential fuzz asserts the one-direction contract — never accept
+what net/http rejects. Two committed corpus seeds pin what it found:
+`4cb4ee00bf74f878` (duplicate `Host`, the G2 record) and
+`b073e10c2a865463` (empty `Transfer-Encoding`, found while hardening).
+Both are red on the unfixed parser and green now, so a fresh clone
+reproduces rather than starting green. The last smoke ran 9.7M
+executions with no finding. The committed corpus also covers the shapes
+short seeds never grow into — the ≥ 64-byte value with a tab before a
+NUL among them.
 
 ## Speed (historical)
 
