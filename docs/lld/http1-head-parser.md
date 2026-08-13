@@ -88,12 +88,25 @@ no control-byte target, no double Content-Length.
 simdhttp/http1
   Parse(req *Request, b []byte, profile Profile) (consumed int, err error)
   Profile  — enum: Compatible, Strict
-  Request  — same fields as today + Host *Header, ContentLength *int64,
-             TransferEncoding []byte, Connection, Expect accessors,
-             Canonical http.Header (merged), Raw []Header (as written)
+  Request  — same fields as today + Host *Header, Connection, Expect
+             accessors, Canonical http.Header (merged, first-wins),
+             Raw []Header (every line as written), and the framing
+             occurrence views ContentLengthLines, TransferEncodingLines
+             [][]byte (borrowed; filled during the walk)
   Err*     — ErrIncomplete, ErrMalformed, ErrTooLarge, ErrTooMany,
              ErrBadHost, ErrAmbiguousFraming (all wrapping a cause)
 ```
+
+The framing surface is deliberately **raw occurrence views, not parsed
+values**: `ContentLengthLines` and `TransferEncodingLines` hold the
+exact trimmed values as written (the same names the plan uses, Task 6).
+Duplicate `Content-Length` is rejected at parse time, so
+`ContentLengthLines` never exposes more than one entry and there is no
+ambiguous pair to disagree over; parsing CL to an int64 is the framing
+table's job, and the head parser exposes no second, potentially
+inconsistent opinion. The framing table (`docs/lld/http1-body-framing.md`
+§4) consumes these views; `Canonical` is the merged net/http-style view
+for handlers, `Raw` the as-written view for auditing and debugging.
 
 Keeping `Parse` on the current signature (profile added) preserves the
 borrowed-buffer contract and the bench shape.
@@ -169,14 +182,18 @@ URI) is the caller's business.
 
 Framing is owned by `http1` (the body layer), not the head parser — see
 `docs/lld/http1-body-framing.md` §2–4. The head parser's contribution:
-expose `Content-Length` lines and `Transfer-Encoding` lines raw, and
-reject a *second* `Content-Length` line at parse time. That rejection is
-an enumerated deviation (D6): Go's `ReadRequest` dedupes identical
-`Content-Length` values and only rejects differing ones; simdhttp
-rejects every duplicate in both profiles. The CL+TE combination is the
-body layer's framing-table verdict (D7 — a deviation from both Go's
-reader and server); the TE-shape rule (exactly one field, exactly
-`chunked`) is parity with Go's single-encoding rule, not D7.
+fill the raw occurrence views `ContentLengthLines` and
+`TransferEncodingLines` (borrowed, same names as the plan's Task 6),
+and reject a *second* `Content-Length` line at parse time. That
+rejection is an enumerated deviation (D6): Go's `ReadRequest` dedupes
+identical `Content-Length` values and only rejects differing ones;
+simdhttp rejects every duplicate in both profiles — and the parse-time
+rejection is what makes the raw view safe to expose (at most one
+`Content-Length` line ever reaches the framing table). The CL+TE
+combination is the body layer's framing-table verdict (D7 — a
+deviation from both Go's reader and server); the TE-shape rule
+(exactly one field, exactly `chunked`) is parity with Go's
+single-encoding rule, not D7.
 
 ### 3.7 Profiles
 

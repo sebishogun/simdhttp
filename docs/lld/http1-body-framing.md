@@ -19,9 +19,10 @@ order:
    semantics apply: a `Content-Length: 0` is an empty body, not a
    framing error).
 
-`BodyReader` is constructed from the head's framing fields and the
-connection's reader; it owns the remaining bytes of the connection and
-reports exactly what it consumed.
+`BodyReader` is constructed from the head's framing occurrence views
+(`ContentLengthLines`, `TransferEncodingLines` — never a parsed
+second opinion) and the connection's reader; it owns the remaining
+bytes of the connection and reports exactly what it consumed.
 
 ## 2. Streaming `BodyReader`
 

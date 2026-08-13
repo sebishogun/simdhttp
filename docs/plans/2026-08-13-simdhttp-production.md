@@ -10,7 +10,9 @@
 **Goal:** Ship the approved production library: a hardened `simdhttp/http1`
 head parser and streaming body reader, then a root net/http-native
 low-allocation router with helpers, middleware, and an error adapter —
-with the safety work (G1–G6, `docs/wrong.md` §2–6) staged first.
+with the safety work (the current gaps G1–G6 of `docs/architecture.md`
+§2, whose records and the benchmark/gate findings live in
+`docs/wrong.md`) staged first.
 
 **Architecture:** Phase 0 forks the shipped parser into `simdhttp/http1`
 with profiles, limits, and the verified safety fixes (tests written
@@ -87,8 +89,11 @@ const (
 func Parse(req *Request, b []byte, profile Profile) (consumed int, err error)
 ```
 
-Change the single control scan back to the shipped form (hit-and-stop,
-as today) so the test exercises the real bug before the fix.
+Copy the parser **verbatim** — the shipped control scan (hit-and-stop
+on the first `IndexAnyOrLess` hit) stays exactly as it is, so the
+regression test exercises the real bug before Task 2 fixes it. No
+behavioral edits in this task; `Profile` is threaded through but not
+yet consulted.
 
 **Step 4: Run it to verify it passes**
 
@@ -174,12 +179,15 @@ Expected: FAIL
 
 **Step 3: Implement**
 
-In the header loop, track the first Host occurrence:
+In the header loop, track the first Host occurrence with
+`bytes.EqualFold` over a precomputed constant slice — no string
+conversion, no allocation:
 
 ```go
-var hostSeen bool
+var hostHeader = []byte("Host") // package-level; []byte of a constant
 // inside the loop, after the name check:
-if strings.EqualFold(string(name), "Host") { // bytes.EqualFold
+var hostSeen bool
+if bytes.EqualFold(name, hostHeader) {
 	if hostSeen {
 		return 0, ErrMalformed
 	}
@@ -335,10 +343,14 @@ func TestDuplicateContentLength(t *testing.T) {
   identical `Content-Length` values and only rejects differing ones
   (verified on Go 1.26.5). The identical-duplicate test above is the
   deviation's regression test.
-- Add raw accessors for the framing layer: `ContentLengthLines [][]byte`
-  and `TransferEncodingLines [][]byte` (borrowed views, filled during
-  the walk). The CL+TE verdict itself is the framing table's job
-  (Task 10, deviation D7), per the LLD.
+- Add the raw occurrence views for the framing layer:
+  `ContentLengthLines [][]byte` and `TransferEncodingLines [][]byte`
+  (borrowed, filled during the walk; same names as the LLD's §3.1
+  surface). No parsed `ContentLength int64` on `Request` — the
+  parse-time duplicate rejection keeps `ContentLengthLines` at one
+  entry, so the view is safe to expose and the framing table holds
+  the single parsing opinion. The CL+TE verdict itself is the framing
+  table's job (Task 10, deviation D7), per the LLD.
 
 **Step 4: Run tests** — `go test ./http1/` PASS.
 
@@ -670,7 +682,15 @@ func TestBuildConflict(t *testing.T) {
 `Build` compiles the segment trie (`docs/lld/router.md` §6), detects
 precedence ties as errors, freezes the router; `ServeHTTP` walks static
 → param → wildcard, resolves the method, allocates nothing on the
-matched path, writes params via `SetPathValue`. Add the explicit
+matched path, writes params via `SetPathValue`. Method resolution per
+`docs/lld/router.md` §6: the nine common methods (`GET, HEAD, POST,
+PUT, PATCH, DELETE, OPTIONS, CONNECT, TRACE`) get dense fixed IDs 0–8
+resolved by an inline length-and-bytes compare chain; custom token
+methods registered via `Handle` get IDs 9+ through an immutable
+open-addressing table built at `Build` (bucket by first byte and
+length, then full compare) — exact, case-sensitive, no interface
+dispatch, no per-request allocation; the node `handlers` array is
+sized `9 + custom methods` at `Build`. Add the explicit
 `MustBuild() *Router` helper that panics on a `Build` error — the only
 panic path for a bad table, for use in tests and top-level setup. No
 interfaces inside.
@@ -691,7 +711,11 @@ git commit -m "router: immutable build and segment-trie matching"
 - Modify: `router_test.go`
 
 **Step 1: Write the failing tests** — 405 with `Allow` for
-method-mismatched paths; `HEAD` served by the `GET` handler unless an
+method-mismatched paths, where `Allow` lists **every registered method
+for the path** (common methods in canonical order, then custom token
+methods lexicographically — deterministic); a custom method (`MKCOL`)
+matches exactly, is case-sensitive (`mkcol` does not match), and
+appears in `Allow`; `HEAD` served by the `GET` handler unless an
 explicit `HEAD` exists; `OPTIONS *` answered with `Allow` — the test
 calls `ServeHTTP` directly (or runs a server with
 `DisableGeneralOptionsHandler: true`), because a standard
@@ -867,16 +891,24 @@ git commit -m "router: middleware stack and httptest end-to-end suite"
 
 **Step 1: Write the failing check** — a Makefile target
 `hot-loops-check` fails if `go tool objdump` shows an indirect call in
-`Router.ServeHTTP`, `http1.Parse`, or `BodyReader.Read`, or if
-`perf stat -e instructions:u,cycles:u` moves more than the 8.3% floor
-vs the committed baseline (interleaved, minima, load < 1).
+`Router.ServeHTTP`, `http1.Parse`, or `BodyReader.Read`. The target
+also records `perf stat -e instructions:u,cycles:u` against the
+committed baseline, with this rule: instructions-retired is
+layout-independent evidence, so there is **no fixed 8.3% (or any
+other) percentage threshold on instructions**. An instruction-count
+increase must instead be explained from the disassembly and is
+accepted only when it buys a cycle or wall-clock win; a decrease is
+recorded but not required. The 8.3% floor applies to wall-clock bench
+comparisons only (interleaved, minima, load < 1), per
+`docs/verification.md` §2.
 
 **Step 2: Run to verify it fails** — it must fail on any seam added
 without the audit (that is the point).
 
 **Step 3: Implement** — move any dispatch found behind the four allowed
 seams (codec/error/observability/future server); verify the no-seam
-paths disassemble with no indirect call.
+paths disassemble with no indirect call; commit the instruction/cycle
+baseline alongside the disassembly evidence.
 
 **Step 4: Run** — `make hot-loops-check`, full suite, race, fuzz
 smokes. PASS.

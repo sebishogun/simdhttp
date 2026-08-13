@@ -49,7 +49,7 @@ host     = literal [ "." literal ]             ; no params in host
   matches the rest of the path including further slashes
   (`req.PathValue("*")` = remainder, URL-decoded once).
 - Literals are matched byte-exact after a single URL-decode of each
-  segment (see §5); `%2F` inside a segment decodes to `/` and is treated
+  segment (see §6); `%2F` inside a segment decodes to `/` and is treated
   as a literal slash character within the segment — the same choice
   `net/http.ServeMux` documents, pinned by a differential test.
 - Params may not repeat a name within one pattern (build error). Empty
@@ -76,9 +76,17 @@ with equal precedence) instead of silently choosing one, matching
 
 405 and method handling:
 
+- **Method space.** `Handle` accepts any valid RFC 9110 token method,
+  not a fixed set. At `Build`, every registered method — and the common
+  set `GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, CONNECT, TRACE` —
+  is compiled into a dense ID space (§6). Matching is exact and
+  case-sensitive (`get` does not match `GET`; the parser already
+  rejects non-token methods).
 - A path matched by patterns of *other* methods registers `405 Method
-  Not Allowed` with an `Allow` header listing the methods (`GET, HEAD,
-  OPTIONS` order canonical).
+  Not Allowed` with an `Allow` header listing **every registered method
+  for that path** (common methods in the canonical order above, then
+  custom token methods in lexicographic order — deterministic for any
+  build). `Allow` never lists methods no pattern on that path uses.
 - `HEAD` is served by the `GET` handler when no `HEAD` pattern exists
   (the handler must not write a body — standard contract, documented);
   an explicit `HEAD` pattern wins.
@@ -94,8 +102,6 @@ with equal precedence) instead of silently choosing one, matching
   server mode, or in handler mode only with that flag set. Asserted
   directly in router tests (ServeHTTP called directly), not against
   ServeMux — which alone answers `OPTIONS *` with 400 (probed).
-- Method match is exact, case-sensitive (`get` does not match `GET`);
-  the parser already rejects non-token methods.
 
 ## 4. Host matching
 
@@ -126,20 +132,44 @@ Compiled form: a segment trie, concrete nodes, no interfaces.
 
 ```
 type node struct {
-    static   map[string]*node   // or sorted slice for small fan-out
-    param    *node              // {name}
-    wildcard *node              // *
-    handlers [maxMethodID]*handlerRef   // nil = no method
-    host     string             // "" = any
+    static   map[string]*node        // or sorted slice for small fan-out
+    param    *node                   // {name}
+    wildcard *node                   // *
+    handlers [maxMethodID]*handlerRef // nil = no method
+    host     string                  // "" = any
 }
 ```
 
 `ServeHTTP` walk: per segment, check static (map lookup on the decoded
-segment — one decode pass), then param, then wildcard; at the leaf,
-pick the method's handler or synthesize 405/OPTIONS. The walk allocates
-nothing; params are written through `SetPathValue` (which stores into
-`req`'s existing map). Method dispatch is a switch on the method string
-hashed once — no `map[string]` in the per-request path, no closures.
+segment — one decode pass, §2), then param, then wildcard; at the leaf,
+resolve the method ID (§3's method space) and pick the handler, or
+synthesize 405/OPTIONS. The walk allocates nothing; params are written
+through `SetPathValue` (which stores into `req`'s existing map).
+
+**Method resolution** — implementable, no interface dispatch, no
+`map[string]` in the common path:
+
+- The nine common methods (`GET, HEAD, POST, PUT, PATCH, DELETE,
+  OPTIONS, CONNECT, TRACE`) own dense fixed IDs 0–8. Resolution is an
+  inline compare chain: match by length and bytes, case-sensitive —
+  two compares for typical methods, no table, no hash.
+- Custom token methods registered via `Handle` are assigned IDs 9+
+  at `Build` into an immutable open-addressing table (bucket by first
+  byte and length, then full compare) that maps the raw method string
+  to its ID. Custom methods are rare in practice, so the fallback
+  lookup is a cold path; it uses no interfaces and no per-request
+  allocation.
+- `maxMethodID` is 9 + the number of distinct custom methods — the
+  node's `handlers` array is sized at `Build` from the registered
+  method set.
+- 405 synthesis at the leaf enumerates the node's non-nil method IDs
+  in the deterministic order of §3 (common canonical order, then
+  custom lexicographic), building the `Allow` value once per request
+  — the only per-request allocation on the 405 path, none on the
+  match path.
+- The one decode pass, the trie walk, and method resolution together
+  contain no closures and no indirect calls; the disassembly gate
+  (`docs/verification.md` §6) applies to the whole walk.
 
 ## 7. Middleware and helpers
 
@@ -166,6 +196,11 @@ hashed once — no `map[string]` in the per-request path, no closures.
 - Conflict and precedence unit tests (conflicts are `Build` errors;
   `MustBuild` panics on them by design); param decoding (`%20`, `%2F`,
   double-encoded) pinned against ServeMux.
+- Method-space tests: a custom token method (`MKCOL`, `REPORT`,
+  case-sensitive `get` vs `GET`) matches exactly and appears in
+  `Allow` in deterministic order; 405 `Allow` lists exactly the
+  registered methods for the path; the common-method inline path and
+  the custom fallback table agree with `Handle` registrations.
 - No-panic fuzz over random paths against a built table.
 - Bench: match of a 4-segment route with 2 params at 100k patterns;
   gate = 8.3% floor + `perf stat` + disassembly (no indirect call in the

@@ -82,9 +82,11 @@ the probed oracle so the corpus doubles as the deviation documentation.
   `\x00` so the G1 path is reached.
 - `FuzzBodyReader` (Phase 1) — arbitrary byte streams into
   `BodyReader` with random limits: no panic, no hang (per-read timeout),
-  `(0, nil)` never returned, framing verdicts stable under input prefix
-  extension (a valid framing must not turn invalid by appending bytes
-  to a *different* request).
+  `(0, nil)` never returned. Pipelining property: appending bytes that
+  belong to a following pipelined request must not change the first
+  request's verdict or body boundary — the reader consumes exactly the
+  framed body, and trailing bytes are reported via `Consumed()`, never
+  interpreted as body or verdict input.
 - `FuzzRouterMatch` (Phase 2) — random paths and methods against a
   built table: no panic, deterministic params.
 - Smoke policy: every commit runs `-fuzztime=15s` on each target; the

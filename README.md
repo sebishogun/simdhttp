@@ -91,8 +91,11 @@ Two provenance notes on the frozen SVG (`docs/bench.svg` cannot change):
 
 - the quoted numbers are the **min-of-three** runs recorded with the
   original README (`a60a44b` measured the typical head; `530ac05` shipped
-  the four-shape table); the SVG's caption saying "minimum of six" is a
-  drawing-time slip that predates the `-count=6` Makefile target;
+  the four-shape table). The SVG and the `-count=6` `bench` Make target
+  landed **together** in `daf5fdc`; the caption's "minimum of six"
+  contradicts the min-of-three source runs it was drawn from, and the
+  `-count=6` target is a reproduction command — neither is the source
+  of the quoted numbers;
 - the SVG rounds ratios for display: the typical row's 1.05× renders as
   "1.1×". The **table above is authoritative**; `make bench` (one process,
   shuffled, `-count=6`) is today's reproduction command, not the source

@@ -84,8 +84,10 @@ too. Every row is asserted one-directionally in the differential tests
 | D9 | Host format stricter than Go's: no comma, balanced brackets | Go's `ValidHostHeader` is a byte-table scan: allows comma, has no bracket-balance logic (probed: `Host: a.com,b.com` and `Host: [::1` both accepted) | accepts all (gap G3) | rejects | rejects | deviation |
 | D10 | request-line version restricted to exactly `HTTP/1.0` and `HTTP/1.1` | ReadRequest accepts any `HTTP/X.Y` with single-digit X and Y (probed: `HTTP/1.2`, `HTTP/2.0`); the server accepts any 1.x and the `PRI * HTTP/2.0` client preface as an upgrade request (probed: 200) | rejects everything else | rejects | rejects | deviation |
 
-D1–D3 ship today; D4–D10 are the future `http1` profiles (D4, D8,
-and the TE-shape rule are parity closures or parity, not deviations).
+D1–D3 and D10 ship today (the current `Parse` enforces tokens, CRLF,
+no obs-fold, and the 1.0/1.1-only version line); D4–D9 are the future
+`http1` profiles (D4, D8, and the TE-shape rule are parity closures
+or parity, not deviations).
 "Compatible" is application-compatible, not byte-for-byte-permissive:
 it may reject ambiguous or security-sensitive forms Go accepts
 (D5–D7, D9–D10), and every such deviation is enumerated here. The
@@ -127,9 +129,10 @@ parser:
 
 - the **hardened head parser** — the shipped `Parse` plus the G1–G6 fixes
   and limits, behind **two profiles**:
-  - *compatible-default*: application-compatible with net/http — every
-    deviation from Go is enumerated in §2.1 (D5–D7 deliberately reject
-    ambiguous forms Go accepts) — tolerant of real-world clients;
+  - *compatible-default*: application-compatible with net/http —
+    every deviation from Go is enumerated in §2.1 (D5–D7, D9–D10
+    deliberately reject ambiguous forms Go accepts) — tolerant of
+    real-world clients;
   - *strict-security*: additionally rejects anything a front door should
     not pass: unusual Hosts, non-canonical framing fields, control bytes
     everywhere, oversized heads.

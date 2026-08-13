@@ -1,5 +1,8 @@
 # Working on this repository
 
+This file is the **canonical** rule file. `CLAUDE.md` is the concise,
+self-contained edition for Claude; when the two disagree, this file wins.
+
 ## Scope: documentation only
 
 This repository tracks the simdhttp project on the `docs/v120-documentation`

@@ -27,14 +27,14 @@ closes the safety gaps; everything else stacks on top.
 
 ## Architecture decisions
 
-### D1. Safety first, framing before routing
+### AD1. Safety first, framing before routing
 
 Phase order (roadmap): harden the shipped parser, then `http1` framing +
 `BodyReader`, then the router, then helpers/middleware, then gates and
 seams polish. No router or server work starts while the parser accepts
 inputs the origin would reject differently.
 
-### D2. net/http-native, ecosystem-preserving
+### AD2. net/http-native, ecosystem-preserving
 
 The router is an `http.Handler`; requests stay `*http.Request`; params
 go through `PathValue`/`SetPathValue` (Go ≥ 1.22; go.mod's floor is
@@ -43,13 +43,13 @@ go through `PathValue`/`SetPathValue` (Go ≥ 1.22; go.mod's floor is
 keep working because nothing is wrapped that does not have to be. The
 optional error adapter is opt-in.
 
-### D3. Borrowed-buffer discipline everywhere
+### AD3. Borrowed-buffer discipline everywhere
 
 The `http1` parser keeps the aliasing contract; `BodyReader` streams and
 holds at most one chunk; the router's match walk allocates nothing on
 the matched path. Limits are enforced during scans, not after.
 
-### D4. Two profiles
+### AD4. Two profiles
 
 `Compatible` is application-compatible with net/http, not
 byte-for-byte-permissive: it matches Go's verdicts except where a
@@ -61,7 +61,7 @@ Hosts, non-canonical framing fields, unknown expectations). The framing
 decision table has one implementation; the strict profile is a filter
 over it, never a second parser.
 
-### D5. Hot loops are concrete
+### AD5. Hot loops are concrete
 
 No interfaces, no indirect calls, no closures in route matching, head
 parsing, or body copying. Dispatch is allowed only at the codec, error,
@@ -69,7 +69,7 @@ observability, and future-server seams, and each seam must pass the
 disassembly and cycle gates. The shipped parser's discipline (intrinsics
 + inline tables + kernel threshold at 64 B) is the template.
 
-### D6. Custom connection server is deferred
+### AD6. Custom connection server is deferred
 
 The library adapts to `net/http.Server`. A socket-accepting server is a
 non-goal with its own design requirement; the future-server seam exists
