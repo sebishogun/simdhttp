@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path"
 	"sort"
 	"strings"
 )
@@ -15,11 +17,17 @@ import (
 // any number of goroutines walk them without a lock and without an atomic. The
 // cost is that a table is assembled once -- which is also what makes a conflict
 // a build-time error rather than a request-time surprise.
+//
+// The matching rules are net/http.ServeMux's, probed rather than assumed and
+// held to them by a differential test. A router that agrees with ServeMux on
+// the ordinary route and diverges on a trailing slash or a 405 is worse than
+// one that is obviously different: the divergence is found in production
+// instead of at the swap.
 
 // Router matches requests to handlers. The zero value is not usable; call New.
 type Router struct {
-	// RedirectTrailingSlash redirects a request for /users to /users/ when
-	// only the slash form is registered. Set it before Build.
+	// RedirectTrailingSlash redirects a request for /users to /users/ when the
+	// slash form has a pattern for the request method. Set it before Build.
 	RedirectTrailingSlash bool
 
 	regs  []registration
@@ -40,14 +48,23 @@ type registration struct {
 	h       http.Handler
 }
 
+// handlerEntry is one registered route at a node. The wildcard names live here
+// rather than on the node because two methods may register the same shape with
+// different names -- "GET /a/{x}" and "POST /a/{y}" reach the same node, and
+// binding both to whichever was registered first would be wrong.
+type handlerEntry struct {
+	h       http.Handler
+	names   []string // wildcard names in match order; "" binds nothing
+	pattern string
+}
+
 // node is one segment position in the compiled trie.
 type node struct {
-	static    map[string]*node
-	param     *node
-	paramName string
-	wildcard  *node
-	handlers  []http.Handler // indexed by method ID; nil means not registered
-	methods   []string       // registered names, sorted, for the 405 Allow value
+	static   map[string]*node
+	single   *node           // {name}: one non-empty segment
+	multi    *node           // trailing slash or *: the rest of the path
+	handlers []*handlerEntry // indexed by method ID; nil means not registered
+	methods  []string        // registered names, sorted, for the 405 Allow value
 }
 
 // New returns an empty router in compatible mode.
@@ -90,7 +107,7 @@ func (r *Router) Build() error {
 	if r.built {
 		return errors.New("simdhttp: Build called twice")
 	}
-	parsed := make([]parsedRoute, 0, len(r.regs))
+	parsed := make([]*parsedRoute, 0, len(r.regs))
 	for _, reg := range r.regs {
 		p, err := parsePattern(reg.method, reg.pattern)
 		if err != nil {
@@ -98,11 +115,13 @@ func (r *Router) Build() error {
 			continue
 		}
 		p.h = reg.h
+		p.idx = len(parsed)
 		parsed = append(parsed, p)
 	}
+	r.detectConflicts(parsed)
 	r.assignMethodIDs(parsed)
-	for i := range parsed {
-		if err := r.insert(&parsed[i]); err != nil {
+	for _, p := range parsed {
+		if err := r.insert(p); err != nil {
 			r.errs = append(r.errs, err)
 		}
 	}
@@ -155,14 +174,22 @@ func (r *Router) MustBuild() *Router {
 type segKind uint8
 
 const (
-	segStatic segKind = iota
-	segParam
-	segWildcard
+	// segLit matches one path segment exactly. Its text is empty only for the
+	// "{$}" end-of-path marker, which matches the empty segment a trailing
+	// slash produces.
+	segLit segKind = iota
+	// segSingle matches one non-empty path segment. Probed: ServeMux answers
+	// 404 for "/a/" against "GET /a/{x}".
+	segSingle
+	// segMulti matches one or more remaining segments and is always final. A
+	// pattern ending in "/" gets one implicitly, which is what makes "/users/"
+	// a subtree rather than an exact path.
+	segMulti
 )
 
 type segment struct {
 	kind segKind
-	text string // the literal, or the parameter name
+	text string // the literal, or the wildcard name ("" binds nothing)
 }
 
 type parsedRoute struct {
@@ -170,14 +197,16 @@ type parsedRoute struct {
 	host    string
 	segs    []segment
 	pattern string
+	names   []string // wildcard names in match order
 	h       http.Handler
+	idx     int
 }
 
 // parsePattern validates a registration and splits it into segments. Every
 // rejection here is a shape that would otherwise have two readings at match
 // time; the router refuses to pick one of them silently.
-func parsePattern(method, pattern string) (parsedRoute, error) {
-	p := parsedRoute{method: method, pattern: pattern}
+func parsePattern(method, pattern string) (*parsedRoute, error) {
+	p := &parsedRoute{method: method, pattern: pattern}
 	switch {
 	case method == "":
 		return p, fmt.Errorf("simdhttp: pattern %q has no method", pattern)
@@ -186,18 +215,19 @@ func parsePattern(method, pattern string) (parsedRoute, error) {
 	case pattern == "":
 		return p, errors.New("simdhttp: empty pattern")
 	}
-	path := pattern
+	route := pattern
 	if i := strings.IndexByte(pattern, '/'); i > 0 {
 		// Lower-cased once here rather than per request: a host is
 		// case-insensitive, and a table that behaved differently depending on
 		// how its patterns were typed would be a trap.
-		p.host, path = strings.ToLower(pattern[:i]), pattern[i:]
+		p.host, route = strings.ToLower(pattern[:i]), pattern[i:]
 	}
-	if path == "" || path[0] != '/' {
+	if route == "" || route[0] != '/' {
 		return p, fmt.Errorf("simdhttp: pattern %q has no leading slash", pattern)
 	}
+	trailingSlash := strings.HasSuffix(route, "/")
 	seen := make(map[string]bool, 4)
-	for rest := path[1:]; ; {
+	for rest := route[1:]; ; {
 		var text string
 		more := false
 		if j := strings.IndexByte(rest, '/'); j >= 0 {
@@ -209,26 +239,49 @@ func parsePattern(method, pattern string) (parsedRoute, error) {
 		if err != nil {
 			return p, err
 		}
-		if s.kind == segParam {
-			if seen[s.text] {
-				return p, fmt.Errorf("simdhttp: pattern %q repeats parameter %q", pattern, s.text)
-			}
-			seen[s.text] = true
+		if more && s.kind == segLit && s.text == "" {
+			// An empty segment anywhere but the end is unreachable: request
+			// paths are cleaned before matching, so "//" never arrives.
+			return p, fmt.Errorf("simdhttp: pattern %q has an empty segment", pattern)
 		}
-		if s.kind == segWildcard && more {
+		if more && s.kind == segMulti {
 			return p, fmt.Errorf("simdhttp: pattern %q has a wildcard before the final segment", pattern)
+		}
+		if s.kind == segSingle || s.kind == segMulti {
+			if s.text != "" {
+				if seen[s.text] {
+					return p, fmt.Errorf("simdhttp: pattern %q repeats parameter %q", pattern, s.text)
+				}
+				seen[s.text] = true
+			}
+			p.names = append(p.names, s.text)
 		}
 		p.segs = append(p.segs, s)
 		if !more {
-			return p, nil
+			break
 		}
 	}
+	if trailingSlash {
+		// The empty final segment a trailing slash produced becomes the
+		// subtree wildcard: "/users/" matches "/users/", "/users/x" and
+		// "/users/x/y". Probed against ServeMux, which reads it the same way,
+		// and which is why "/" matches every path.
+		last := len(p.segs) - 1
+		if p.segs[last].kind == segLit && p.segs[last].text == "" {
+			p.segs[last] = segment{kind: segMulti}
+			p.names = append(p.names, "")
+		}
+	}
+	return p, nil
 }
 
 func parseSegment(seg, pattern string) (segment, error) {
 	switch {
 	case seg == "*":
-		return segment{kind: segWildcard, text: "*"}, nil
+		return segment{kind: segMulti, text: "*"}, nil
+	case seg == "{$}":
+		// The end-of-path marker: "/users/{$}" matches only "/users/".
+		return segment{kind: segLit, text: ""}, nil
 	case strings.HasPrefix(seg, "{"):
 		if !strings.HasSuffix(seg, "}") || len(seg) < 2 {
 			return segment{}, fmt.Errorf("simdhttp: pattern %q has an unterminated parameter", pattern)
@@ -240,7 +293,7 @@ func parseSegment(seg, pattern string) (segment, error) {
 		if strings.ContainsAny(name, "{}") {
 			return segment{}, fmt.Errorf("simdhttp: pattern %q has a malformed parameter", pattern)
 		}
-		return segment{kind: segParam, text: name}, nil
+		return segment{kind: segSingle, text: name}, nil
 	case strings.ContainsAny(seg, "{}"):
 		// "{id}.json" and "v{id}": a parameter sharing a segment with a
 		// literal has more than one reading, so v1 rejects it rather than
@@ -253,7 +306,7 @@ func parseSegment(seg, pattern string) (segment, error) {
 		if err != nil {
 			return segment{}, fmt.Errorf("simdhttp: pattern %q has an invalid escape", pattern)
 		}
-		return segment{kind: segStatic, text: lit}, nil
+		return segment{kind: segLit, text: lit}, nil
 	}
 }
 
@@ -285,6 +338,177 @@ var methodTokenChar = func() (t [128]bool) {
 	return t
 }()
 
+// ---- conflict detection ----
+
+// Two patterns conflict when some request matches both and neither is more
+// specific: there is no rule that picks one, so accepting the table would mean
+// choosing silently. ServeMux panics on these at registration; this reports
+// them from Build, which is the same detection delivered differently.
+type relationship uint8
+
+const (
+	relEquivalent relationship = iota
+	relMoreGeneral
+	relMoreSpecific
+	relOverlaps
+	relDisjoint
+)
+
+func combineRel(a, b relationship) relationship {
+	switch {
+	case a == relDisjoint || b == relDisjoint:
+		return relDisjoint
+	case a == relEquivalent:
+		return b
+	case b == relEquivalent:
+		return a
+	case a == b:
+		return a
+	default:
+		// One position says more general, another says more specific, so
+		// neither pattern contains the other.
+		return relOverlaps
+	}
+}
+
+// compareSegs relates two non-multi segments at the same position.
+func compareSegs(s1, s2 segment) relationship {
+	switch {
+	case s1.kind == segLit && s2.kind == segLit:
+		if s1.text == s2.text {
+			return relEquivalent
+		}
+		return relDisjoint
+	case s1.kind == segLit:
+		if s1.text == "" {
+			return relDisjoint // {$} matches the empty segment; {x} never does
+		}
+		return relMoreSpecific
+	case s2.kind == segLit:
+		if s2.text == "" {
+			return relDisjoint
+		}
+		return relMoreGeneral
+	default:
+		return relEquivalent // both single
+	}
+}
+
+func comparePaths(p1, p2 *parsedRoute) relationship {
+	rel := relEquivalent
+	i := 0
+	for i < len(p1.segs) && i < len(p2.segs) {
+		s1, s2 := p1.segs[i], p2.segs[i]
+		m1, m2 := s1.kind == segMulti, s2.kind == segMulti
+		switch {
+		case m1 && m2:
+			return combineRel(rel, relEquivalent)
+		case m1:
+			// p1 takes every remaining segment; p2 needs at least the ones it
+			// still lists, so p2's paths are a subset of p1's.
+			return combineRel(rel, relMoreGeneral)
+		case m2:
+			return combineRel(rel, relMoreSpecific)
+		}
+		rel = combineRel(rel, compareSegs(s1, s2))
+		if rel == relDisjoint {
+			return relDisjoint
+		}
+		i++
+	}
+	if i == len(p1.segs) && i == len(p2.segs) {
+		return rel
+	}
+	// One ran out without a multi, so it matches paths of exactly its own
+	// length while the other needs more segments.
+	return relDisjoint
+}
+
+// pairwiseLimit is the group size below which conflicts are checked directly.
+// Above it the group splits on the literal at the current position, which is
+// what keeps a hundred-thousand-route table from costing a quadratic Build.
+const pairwiseLimit = 32
+
+func (r *Router) detectConflicts(routes []*parsedRoute) {
+	type key struct{ method, host string }
+	groups := map[key][]*parsedRoute{}
+	for _, p := range routes {
+		k := key{p.method, p.host}
+		groups[k] = append(groups[k], p)
+	}
+	keys := make([]key, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	// Sorted so a build reports the same errors in the same order every time.
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].method != keys[j].method {
+			return keys[i].method < keys[j].method
+		}
+		return keys[i].host < keys[j].host
+	})
+	seen := map[[2]int]bool{}
+	for _, k := range keys {
+		r.scanGroup(groups[k], 0, seen)
+	}
+}
+
+func (r *Router) scanGroup(g []*parsedRoute, depth int, seen map[[2]int]bool) {
+	if len(g) < 2 {
+		return
+	}
+	if len(g) <= pairwiseLimit {
+		r.pairwise(g, seen)
+		return
+	}
+	// Patterns with a literal here split into buckets that cannot match each
+	// other. Anything else at this position -- a parameter, a wildcard, or a
+	// pattern that has ended -- can match alongside any bucket, so it joins
+	// all of them.
+	lits := map[string][]*parsedRoute{}
+	var wild []*parsedRoute
+	for _, p := range g {
+		if depth < len(p.segs) && p.segs[depth].kind == segLit {
+			lits[p.segs[depth].text] = append(lits[p.segs[depth].text], p)
+		} else {
+			wild = append(wild, p)
+		}
+	}
+	if len(lits) < 2 {
+		r.pairwise(g, seen) // no split available; compare directly
+		return
+	}
+	for _, b := range lits {
+		sub := b
+		if len(wild) > 0 {
+			sub = append(append(make([]*parsedRoute, 0, len(b)+len(wild)), b...), wild...)
+		}
+		r.scanGroup(sub, depth+1, seen)
+	}
+	r.scanGroup(wild, depth+1, seen)
+}
+
+func (r *Router) pairwise(g []*parsedRoute, seen map[[2]int]bool) {
+	for i := 0; i < len(g); i++ {
+		for j := i + 1; j < len(g); j++ {
+			a, b := g[i], g[j]
+			k := [2]int{a.idx, b.idx}
+			if k[0] > k[1] {
+				k[0], k[1] = k[1], k[0]
+			}
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			if rel := comparePaths(a, b); rel == relEquivalent || rel == relOverlaps {
+				r.errs = append(r.errs, fmt.Errorf(
+					"simdhttp: %s %q conflicts with %s %q: both match some paths and neither is more specific",
+					a.method, a.pattern, b.method, b.pattern))
+			}
+		}
+	}
+}
+
 // ---- method IDs ----
 
 // The nine methods below own dense fixed IDs, resolved by an inline compare
@@ -292,11 +516,10 @@ var methodTokenChar = func() (t [128]bool) {
 // lookup per request is a cost every route would pay for a rare case.
 const numCommonMethods = 9
 
-// The three IDs the serving path names directly.
+// The IDs the serving path names directly.
 const (
-	methodIDGet     = 0
-	methodIDHead    = 1
-	methodIDOptions = 6
+	methodIDGet  = 0
+	methodIDHead = 1
 )
 
 func commonMethodID(m string) int {
@@ -343,20 +566,19 @@ var commonMethodNames = [numCommonMethods]string{
 
 // assignMethodIDs gives every custom method a dense ID above the common nine,
 // so a node's handler lookup is a slice index rather than a map lookup.
-func (r *Router) assignMethodIDs(routes []parsedRoute) {
+func (r *Router) assignMethodIDs(routes []*parsedRoute) {
 	r.numMethods = numCommonMethods
-	for i := range routes {
-		m := routes[i].method
-		if commonMethodID(m) >= 0 {
+	for _, p := range routes {
+		if commonMethodID(p.method) >= 0 {
 			continue
 		}
 		if r.methodIDs == nil {
 			r.methodIDs = map[string]int{}
 		}
-		if _, ok := r.methodIDs[m]; ok {
+		if _, ok := r.methodIDs[p.method]; ok {
 			continue
 		}
-		r.methodIDs[m] = r.numMethods
+		r.methodIDs[p.method] = r.numMethods
 		r.numMethods++
 	}
 }
@@ -385,7 +607,7 @@ func (r *Router) insert(p *parsedRoute) error {
 	n := root
 	for _, s := range p.segs {
 		switch s.kind {
-		case segStatic:
+		case segLit:
 			if n.static == nil {
 				n.static = map[string]*node{}
 			}
@@ -395,17 +617,16 @@ func (r *Router) insert(p *parsedRoute) error {
 				n.static[s.text] = next
 			}
 			n = next
-		case segParam:
-			if n.param == nil {
-				n.param = &node{}
-				n.paramName = s.text
+		case segSingle:
+			if n.single == nil {
+				n.single = &node{}
 			}
-			n = n.param
-		case segWildcard:
-			if n.wildcard == nil {
-				n.wildcard = &node{}
+			n = n.single
+		case segMulti:
+			if n.multi == nil {
+				n.multi = &node{}
 			}
-			n = n.wildcard
+			n = n.multi
 		}
 	}
 	id := r.methodID(p.method)
@@ -413,15 +634,14 @@ func (r *Router) insert(p *parsedRoute) error {
 		return fmt.Errorf("simdhttp: method %q has no ID", p.method)
 	}
 	if n.handlers == nil {
-		n.handlers = make([]http.Handler, r.numMethods)
+		n.handlers = make([]*handlerEntry, r.numMethods)
 	}
 	if n.handlers[id] != nil {
-		// Two patterns reaching the same node with the same method match the
-		// same requests at equal precedence. Choosing one silently is how a
-		// route table starts lying about which handler runs.
-		return fmt.Errorf("simdhttp: %s %q conflicts with an earlier pattern", p.method, p.pattern)
+		// detectConflicts already reported this pair; keeping the first
+		// registration leaves the table deterministic either way.
+		return nil
 	}
-	n.handlers[id] = r.wrap(p.h)
+	n.handlers[id] = &handlerEntry{h: r.wrap(p.h), names: p.names, pattern: p.pattern}
 	n.methods = append(n.methods, p.method)
 	sort.Strings(n.methods)
 	return nil
@@ -442,12 +662,10 @@ func (r *Router) wrap(h http.Handler) http.Handler {
 // heap. Beyond it the walk still matches; it stops being allocation-free.
 const maxInlineParams = 8
 
-type paramKV struct{ name, value string }
-
-// ServeHTTP walks the compiled trie: static, then parameter, then wildcard, at
-// each position, backtracking when a more specific edge leads nowhere. Nothing
-// on this path allocates -- segments are substrings of the request's own path,
-// bindings live in a stack array, and the method resolves to an array index.
+// ServeHTTP walks the compiled trie: literal, then parameter, then wildcard,
+// at each position, backtracking when a more specific edge leads nowhere.
+// Nothing on this path allocates -- segments are substrings of the request's
+// own path, bindings live in a stack array, and the method is an array index.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if !r.built {
 		// A 404 here would answer "no such route" for a table that was never
@@ -455,26 +673,34 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "simdhttp: router used before Build", http.StatusInternalServerError)
 		return
 	}
-	path := escapedPath(req)
-	if req.Method == "OPTIONS" && (path == "*" || req.RequestURI == "*") {
+	escaped := escapedPath(req)
+	id := r.methodID(req.Method)
+	if req.Method == "OPTIONS" && (escaped == "*" || req.RequestURI == "*") {
 		// RFC 9110 asterisk-form: a request about the server rather than a
 		// resource, so it never reaches the trie. A standard http.Server
-		// answers it before the handler unless DisableGeneralOptionsHandler
-		// is set, which is why this is reachable at all.
+		// answers it before the handler unless DisableGeneralOptionsHandler is
+		// set, which is why this is reachable at all.
 		w.Header().Set("Allow", r.allowAll)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if path == "" || path[0] != '/' {
+	reqPath := escaped
+	if req.Method != "CONNECT" {
+		// CONNECT names an authority rather than a path, so it is not
+		// canonicalized -- the same exception ServeMux makes.
+		reqPath = cleanPath(escaped)
+	}
+	if reqPath == "" || reqPath[0] != '/' {
 		http.NotFound(w, req)
 		return
 	}
-	var params [maxInlineParams]paramKV
-	var n *node
-	var np int
+
 	root := r.hostRoot(req.Host)
+	var vals [maxInlineParams]string
+	var n *node
+	var nv int
 	if root != nil {
-		n, np = matchSegments(root, path[1:], &params, 0)
+		n, nv = matchSegments(root, reqPath[1:], id, &vals, 0)
 	}
 	if n == nil && root != r.roots[""] {
 		// A host-scoped table that does not answer falls back to the patterns
@@ -482,74 +708,101 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// authority names one host is not served by another host's routes.
 		root = r.roots[""]
 		if root != nil {
-			n, np = matchSegments(root, path[1:], &params, 0)
+			n, nv = matchSegments(root, reqPath[1:], id, &vals, 0)
 		}
 	}
 	if root == nil {
 		http.NotFound(w, req)
 		return
 	}
-	id := r.methodID(req.Method)
+
+	// A trailing-slash redirect is decided on the cleaned path, and only then
+	// is an unclean path redirected to its clean form. That is ServeMux's
+	// order, probed.
+	if n == nil && r.RedirectTrailingSlash && !strings.HasSuffix(reqPath, "/") {
+		if lookupPath(root, reqPath+"/", id) != nil {
+			// ServeMux builds this Location from the DECODED path, unlike the
+			// clean-path redirect below which builds it from the escaped one.
+			// The two therefore escape differently, and both were probed.
+			target := reqPath + "/"
+			if req.URL != nil {
+				target = cleanPath(req.URL.Path) + "/"
+			}
+			redirect(w, req, target)
+			return
+		}
+	}
+	if reqPath != escaped {
+		redirect(w, req, reqPath)
+		return
+	}
 	if n == nil {
-		r.serveNoRoute(w, req, root, path, id)
+		r.serveNoRoute(w, req, root, reqPath, id)
 		return
 	}
 	if id >= 0 && id < len(n.handlers) && n.handlers[id] != nil {
-		for i := 0; i < np; i++ {
-			req.SetPathValue(params[i].name, params[i].value)
-		}
-		n.handlers[id].ServeHTTP(w, req)
+		serveEntry(w, req, n.handlers[id], &vals, nv)
 		return
 	}
 	// HEAD is served by GET when no HEAD pattern exists. The handler must not
-	// write a body; that is the standard contract, not something the router
-	// can enforce without wrapping the ResponseWriter.
+	// write a body; that is the standard contract, not something the router can
+	// enforce without wrapping the ResponseWriter.
 	if id == methodIDHead && n.handlers[methodIDGet] != nil {
-		for i := 0; i < np; i++ {
-			req.SetPathValue(params[i].name, params[i].value)
-		}
-		n.handlers[methodIDGet].ServeHTTP(w, req)
+		serveEntry(w, req, n.handlers[methodIDGet], &vals, nv)
 		return
 	}
-	r.methodNotAllowed(w, req, root, path, n)
+	r.methodNotAllowed(w, req, root, reqPath)
 }
 
-// serveNoRoute handles a path with no matching node: the asterisk-form
-// OPTIONS, the trailing-slash variant, or a plain 404.
-func (r *Router) serveNoRoute(w http.ResponseWriter, req *http.Request, root *node, path string, id int) {
-	if !r.RedirectTrailingSlash || strings.HasSuffix(path, "/") {
-		http.NotFound(w, req)
-		return
-	}
-	slash := lookupPath(root, path+"/")
-	if slash == nil {
-		http.NotFound(w, req)
-		return
-	}
-	if id >= 0 && id < len(slash.handlers) && slash.handlers[id] != nil {
-		target := path + "/"
-		if req.URL.RawQuery != "" {
-			target += "?" + req.URL.RawQuery
+// serveEntry binds the values this walk collected and runs the handler. The
+// names come from the matched entry rather than the node, so two methods
+// registered on the same shape with different names each get their own.
+func serveEntry(w http.ResponseWriter, req *http.Request, e *handlerEntry, vals *[maxInlineParams]string, nv int) {
+	for i := 0; i < nv && i < len(e.names); i++ {
+		if e.names[i] != "" {
+			req.SetPathValue(e.names[i], vals[i])
 		}
-		http.Redirect(w, req, target, http.StatusTemporaryRedirect)
+	}
+	e.h.ServeHTTP(w, req)
+}
+
+func redirect(w http.ResponseWriter, req *http.Request, target string) {
+	// Built through url.URL exactly as ServeMux does, including the second
+	// escaping pass it performs on an already-escaped path. Matching the
+	// reference byte for byte matters more here than tidiness: a Location a
+	// client follows differently is a different request.
+	u := &url.URL{Path: target}
+	if req.URL != nil {
+		u.RawQuery = req.URL.RawQuery
+	}
+	http.Redirect(w, req, u.String(), http.StatusTemporaryRedirect)
+}
+
+// serveNoRoute handles a path no pattern covers: the trailing-slash variant
+// with a method mismatch, or a plain 404.
+func (r *Router) serveNoRoute(w http.ResponseWriter, req *http.Request, root *node, reqPath string, id int) {
+	// The method-filtered walk found nothing. If some other method has a
+	// pattern for this path, the path exists and only the method is wrong.
+	if lookupPath(root, reqPath, -1) != nil {
+		r.methodNotAllowed(w, req, root, reqPath)
 		return
 	}
-	// The slash form exists but has no pattern for this method. Redirecting
-	// would send the client to a URL that refuses it just the same, so the
-	// answer is the 405 that URL would give.
-	w.Header().Set("Allow", allowValue(nil, slash))
-	http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
+	// The slash form may carry the patterns instead. Redirecting there would
+	// send the client to a URL that refuses it just the same, so the answer is
+	// the 405 that URL would give.
+	if r.RedirectTrailingSlash && !strings.HasSuffix(reqPath, "/") &&
+		lookupPath(root, reqPath+"/", -1) != nil {
+		r.methodNotAllowed(w, req, root, reqPath)
+		return
+	}
+	http.NotFound(w, req)
 }
 
 // methodNotAllowed answers a path that matched with methods the request did
 // not use. The Allow value unions the trailing-slash variant when the request
 // path lacks one, which is what ServeMux's matchingMethods does.
-func (r *Router) methodNotAllowed(w http.ResponseWriter, req *http.Request, root *node, path string, n *node) {
-	var slash *node
-	if !strings.HasSuffix(path, "/") {
-		slash = lookupPath(root, path+"/")
-	}
-	w.Header().Set("Allow", allowValue(n, slash))
+func (r *Router) methodNotAllowed(w http.ResponseWriter, req *http.Request, root *node, reqPath string) {
+	w.Header().Set("Allow", allowValue(root, reqPath))
 	http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
 }
 
@@ -558,39 +811,33 @@ func (r *Router) methodNotAllowed(w http.ResponseWriter, req *http.Request, root
 // is no implicit OPTIONS -- ServeMux does not add one, and a router that
 // advertised a method it would then refuse would be worse than silent. This is
 // the cold path and may allocate.
-func allowValue(a, b *node) string {
-	names := make([]string, 0, 8)
-	add := func(n *node) {
-		if n == nil {
-			return
-		}
-		for _, m := range n.methods {
-			names = append(names, m)
-			if m == "GET" {
-				names = append(names, "HEAD")
-			}
+func allowValue(root *node, reqPath string) string {
+	set := map[string]bool{}
+	if root != nil && len(reqPath) > 0 && reqPath[0] == '/' {
+		collectMethods(root, reqPath[1:], set)
+		if !strings.HasSuffix(reqPath, "/") {
+			// ServeMux unions the trailing-slash variant when the request path
+			// lacks one, so a POST registered only on /users/ is named in the
+			// Allow for /users.
+			collectMethods(root, reqPath[1:]+"/", set)
 		}
 	}
-	add(a)
-	add(b)
+	names := make([]string, 0, len(set))
+	for m := range set {
+		names = append(names, m)
+	}
 	sort.Strings(names)
-	out := names[:0]
-	for i, m := range names {
-		if i == 0 || m != names[i-1] {
-			out = append(out, m)
-		}
-	}
-	return strings.Join(out, ", ")
+	return strings.Join(names, ", ")
 }
 
 // lookupPath finds a node without binding parameters, for the Allow and
 // trailing-slash decisions.
-func lookupPath(root *node, path string) *node {
-	if path == "" || path[0] != '/' {
+func lookupPath(root *node, p string, want int) *node {
+	if p == "" || p[0] != '/' {
 		return nil
 	}
-	var scratch [maxInlineParams]paramKV
-	n, _ := matchSegments(root, path[1:], &scratch, 0)
+	var scratch [maxInlineParams]string
+	n, _ := matchSegments(root, p[1:], want, &scratch, 0)
 	return n
 }
 
@@ -623,10 +870,10 @@ func escapedPath(req *http.Request) string {
 	return req.URL.EscapedPath()
 }
 
-// matchSegments consumes one segment of rest and recurses, trying static, then
-// parameter, then wildcard. It backtracks: a static edge that leads to a dead
-// end does not prevent a parameter edge from matching the same request.
-func matchSegments(n *node, rest string, params *[maxInlineParams]paramKV, np int) (*node, int) {
+// matchSegments consumes one segment of rest and recurses, trying literal,
+// then parameter, then wildcard. It backtracks: a literal edge that leads to a
+// dead end does not prevent a parameter edge from matching the same request.
+func matchSegments(n *node, rest string, want int, vals *[maxInlineParams]string, nv int) (*node, int) {
 	var seg string
 	more := false
 	if j := strings.IndexByte(rest, '/'); j >= 0 {
@@ -646,32 +893,32 @@ func matchSegments(n *node, rest string, params *[maxInlineParams]paramKV, np in
 	if n.static != nil {
 		if next := n.static[dec]; next != nil {
 			if !more {
-				if next.handlers != nil {
-					return next, np
+				if serves(next, want) {
+					return next, nv
 				}
-			} else if got, gnp := matchSegments(next, tail, params, np); got != nil {
-				return got, gnp
+			} else if got, gnv := matchSegments(next, tail, want, vals, nv); got != nil {
+				return got, gnv
 			}
 		}
 	}
-	if n.param != nil && dec != "" {
-		// A parameter does not match an empty segment. Probed on Go 1.26.5:
+	if n.single != nil && dec != "" {
+		// A parameter does not match an empty segment. Probed on Go 1.26.2:
 		// ServeMux answers 404 for "/a/" against "GET /a/{x}", so matching it
 		// here would route a request the origin would have refused.
-		pnp := np
-		if pnp < maxInlineParams {
-			params[pnp] = paramKV{n.paramName, dec}
-			pnp++
+		snv := nv
+		if snv < maxInlineParams {
+			vals[snv] = dec
+			snv++
 		}
 		if !more {
-			if n.param.handlers != nil {
-				return n.param, pnp
+			if serves(n.single, want) {
+				return n.single, snv
 			}
-		} else if got, gnp := matchSegments(n.param, tail, params, pnp); got != nil {
-			return got, gnp
+		} else if got, gnv := matchSegments(n.single, tail, want, vals, snv); got != nil {
+			return got, gnv
 		}
 	}
-	if n.wildcard != nil && n.wildcard.handlers != nil {
+	if n.multi != nil && serves(n.multi, want) {
 		// The wildcard takes the whole remainder from this position, slashes
 		// included. rest is already that remainder, so binding it costs no
 		// allocation.
@@ -679,13 +926,115 @@ func matchSegments(n *node, rest string, params *[maxInlineParams]paramKV, np in
 		if !ok {
 			return nil, 0
 		}
-		if np < maxInlineParams {
-			params[np] = paramKV{"*", whole}
-			np++
+		if nv < maxInlineParams {
+			vals[nv] = whole
+			nv++
 		}
-		return n.wildcard, np
+		return n.multi, nv
 	}
 	return nil, 0
+}
+
+// serves reports whether a node answers the wanted method. want < 0 means any
+// method, which is how the Allow walk and the trailing-slash probe ask.
+func serves(n *node, want int) bool {
+	if n.handlers == nil {
+		return false
+	}
+	if want < 0 {
+		return true
+	}
+	if want < len(n.handlers) && n.handlers[want] != nil {
+		return true
+	}
+	// A HEAD request is answered by the GET pattern, so a node carrying only
+	// GET still matches it.
+	return want == methodIDHead && n.handlers[methodIDGet] != nil
+}
+
+// collectMethods unions the methods of every pattern that matches this path,
+// which is what the Allow header names. ServeMux enumerates the same set: not
+// the methods of the one node that won, but of every node that could have.
+func collectMethods(n *node, rest string, set map[string]bool) {
+	var seg string
+	more := false
+	if j := strings.IndexByte(rest, '/'); j >= 0 {
+		seg, more = rest[:j], true
+	} else {
+		seg = rest
+	}
+	dec, ok := decodeSegmentFast(seg)
+	if !ok {
+		return
+	}
+	var tail string
+	if more {
+		tail = rest[len(seg)+1:]
+	}
+	if n.static != nil {
+		if next := n.static[dec]; next != nil {
+			if !more {
+				addMethods(next, set)
+			} else {
+				collectMethods(next, tail, set)
+			}
+		}
+	}
+	if n.single != nil && dec != "" {
+		if !more {
+			addMethods(n.single, set)
+		} else {
+			collectMethods(n.single, tail, set)
+		}
+	}
+	if n.multi != nil {
+		addMethods(n.multi, set)
+	}
+}
+
+func addMethods(n *node, set map[string]bool) {
+	for _, m := range n.methods {
+		set[m] = true
+		if m == "GET" {
+			// GET implies HEAD, which is why Allow lists a method no pattern
+			// registered. ServeMux does the same.
+			set["HEAD"] = true
+		}
+	}
+}
+
+// cleanPath returns the shortest equivalent path, keeping a trailing slash. An
+// unclean path is answered with a redirect rather than matched, so "/a//b" and
+// "/a/./b" cannot reach a different handler than "/a/b" would.
+func cleanPath(p string) string {
+	if !needsClean(p) {
+		return p
+	}
+	if p == "" {
+		return "/"
+	}
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	np := path.Clean(p)
+	if p[len(p)-1] == '/' && np != "/" {
+		np += "/"
+	}
+	return np
+}
+
+// needsClean reports whether a path could shorten. The common path has no "//"
+// and no "/." and returns here, so an ordinary request never pays for Clean.
+func needsClean(p string) bool {
+	if p == "" || p[0] != '/' {
+		return true
+	}
+	for i := 0; i+1 < len(p); i++ {
+		if p[i] == '/' && (p[i+1] == '/' || p[i+1] == '.') {
+			return true
+		}
+	}
+	return p[len(p)-1] == '.'
 }
 
 // decodeSegmentFast resolves percent-escapes. The common case has no '%' and
