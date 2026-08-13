@@ -38,6 +38,14 @@ type Request struct {
 	Proto   []byte
 	Headers []Header
 
+	// ContentLengthLines and TransferEncodingLines are the raw occurrences
+	// of those framing headers, borrowed from the input during the walk --
+	// the surface the framing decision table (Phase 1) reads. Parse rejects
+	// a second Content-Length, so ContentLengthLines holds at most one entry
+	// and the framing layer keeps the single parsing opinion.
+	ContentLengthLines    [][]byte
+	TransferEncodingLines [][]byte
+
 	// lineEnds is scratch for the one-pass boundary scan, reused across
 	// Parse calls on the same Request.
 	lineEnds []int32
@@ -55,6 +63,8 @@ var (
 	ErrIncomplete = errors.New("simdhttp: incomplete head")
 	// ErrMalformed means the bytes cannot be an HTTP/1.x head.
 	ErrMalformed = errors.New("simdhttp: malformed head")
+	// ErrMissingHost means an HTTP/1.1 head had no Host, or an empty one.
+	ErrMissingHost = errors.New("simdhttp: missing or empty Host header")
 )
 
 // Profile selects the verdict set. Compatible mirrors net/http's reader;
@@ -96,6 +106,13 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 	if len(req.Target) == 0 {
 		return 0, ErrMalformed
 	}
+	// The request-target carries no control bytes (a tab included -- unlike a
+	// header value, a tab in a target is malformed) and every percent-escape
+	// is two hex digits. net/url rejects both ("invalid control character in
+	// URL", "invalid URL escape"), so this is parity, not added strictness.
+	if !validTarget(req.Target) {
+		return 0, ErrMalformed
+	}
 	// The version is HTTP/1.0 or HTTP/1.1 -- net/http rejects anything
 	// else, and a request line whose third field is not a version is one
 	// of the ways a smuggled request hides.
@@ -108,7 +125,11 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 	}
 
 	req.Headers = req.Headers[:0]
-	hostSeen := false
+	req.ContentLengthLines = req.ContentLengthLines[:0]
+	req.TransferEncodingLines = req.TransferEncodingLines[:0]
+	hostCount := 0
+	hostNonEmpty := false
+	clSeen := false
 	block := b[nl+1:]
 	// One pass finds every line end in the header block; the walk below
 	// splits on the index instead of scanning for each '\n' separately,
@@ -132,7 +153,19 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 		consumedTo := nl + 1 + lineEnd + 1
 		start = lineEnd + 1
 		if len(line) == 0 {
-			return consumedTo, nil // the blank line: head complete
+			// Head complete. HTTP/1.1 requires a non-empty, well-formed Host;
+			// 1.0 may omit it. Strict rejects a missing/empty Host as
+			// malformed; Compatible answers ErrMissingHost so a caller can
+			// tell that framing case apart. Go's server accepts a
+			// present-but-empty Host: (D5) -- both profiles here count empty
+			// as missing.
+			if req.Proto[7] == '1' && !hostNonEmpty {
+				if profile == Strict {
+					return 0, ErrMalformed
+				}
+				return 0, ErrMissingHost
+			}
+			return consumedTo, nil
 		}
 		// bytes.IndexByte is a compiler intrinsic -- inlined, no dispatch
 		// -- which beats a kernel call on a short header line, the shape
@@ -151,11 +184,12 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 		// headers" to a second one, and a parser in front of an origin that
 		// accepts two is the request-smuggling seam the differential fuzz
 		// found (docs/wrong.md, the G2 record; the corpus seed pins it).
-		if bytes.EqualFold(name, hostHeader) {
-			if hostSeen {
-				return 0, ErrMalformed
+		isHost := bytes.EqualFold(name, hostHeader)
+		if isHost {
+			hostCount++
+			if hostCount > 1 {
+				return 0, ErrMalformed // duplicate Host, even identical/empty (parity)
 			}
-			hostSeen = true
 		}
 		val := line[colon+1:]
 		for len(val) > 0 && (val[0] == ' ' || val[0] == '\t') {
@@ -189,10 +223,76 @@ func Parse(req *Request, b []byte, profile Profile) (consumed int, err error) {
 				}
 			}
 		}
+		if isHost && len(val) > 0 {
+			if !validHost(val) {
+				return 0, ErrMalformed // D9: stricter than httpguts
+			}
+			hostNonEmpty = true // present-but-empty counts as missing (D5)
+		}
+		if bytes.EqualFold(name, clHeader) {
+			// A second Content-Length is rejected in both profiles. Go dedupes
+			// identical values and rejects only differing ones (D6); this is
+			// stricter on purpose -- two CL lines are a framing ambiguity.
+			if clSeen {
+				return 0, ErrMalformed
+			}
+			clSeen = true
+			req.ContentLengthLines = append(req.ContentLengthLines, val)
+		} else if bytes.EqualFold(name, teHeader) {
+			req.TransferEncodingLines = append(req.TransferEncodingLines, val)
+		}
 		req.Headers = append(req.Headers, Header{Name: name, Value: val})
 	}
 	// Ran out of line ends before the blank line: the head is incomplete.
 	return 0, ErrIncomplete
+}
+
+// clHeader and teHeader name the framing headers, []byte of constants.
+var (
+	clHeader = []byte("Content-Length")
+	teHeader = []byte("Transfer-Encoding")
+)
+
+// validTarget rejects a control byte (tab included) and a percent-escape
+// that is not two hex digits.
+func validTarget(t []byte) bool {
+	if i := simd.IndexAnyOrLess(t, "\x7f", 0x20); i >= 0 {
+		return false
+	}
+	for i := 0; i < len(t); i++ {
+		if t[i] == '%' {
+			if i+2 >= len(t) || !isHex(t[i+1]) || !isHex(t[i+2]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+// validHost rejects the authority forms net/http's httpguts misses: a
+// space/tab/control/comma anywhere, and unbalanced brackets (D9). Stricter
+// than ValidHostHeader on purpose -- probed on Go 1.26.5, its table accepts
+// a.com,b.com and unbalanced [::1.
+func validHost(h []byte) bool {
+	depth := 0
+	for _, c := range h {
+		switch {
+		case c <= 0x20 || c == 0x7f || c == ',':
+			return false
+		case c == '[':
+			depth++
+		case c == ']':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 // hostHeader is the Host field name for the duplicate check; a package
