@@ -49,7 +49,7 @@ host     = literal [ "." literal ]             ; no params in host
   matches the rest of the path including further slashes
   (`req.PathValue("*")` = remainder, URL-decoded once).
 - Literals are matched byte-exact after a single URL-decode of each
-  segment (see §6); `%2F` inside a segment decodes to `/` and is treated
+  segment; `%2F` inside a segment decodes to `/` and is treated
   as a literal slash character within the segment — the same choice
   `net/http.ServeMux` documents, pinned by a differential test.
 - Params may not repeat a name within one pattern (build error). Empty
@@ -83,10 +83,16 @@ with equal precedence) instead of silently choosing one, matching
   case-sensitive (`get` does not match `GET`; the parser already
   rejects non-token methods).
 - A path matched by patterns of *other* methods registers `405 Method
-  Not Allowed` with an `Allow` header listing **every registered method
-  for that path** (common methods in the canonical order above, then
-  custom token methods in lexicographic order — deterministic for any
-  build). `Allow` never lists methods no pattern on that path uses.
+  Not Allowed` with an `Allow` header built **ServeMux-exactly** (Go
+  1.26.5 `matchingMethods` + `slices.Sorted`, `routing_tree.go`):
+  the set of methods registered for the path — including custom token
+  methods — **sorted lexicographically**, plus an implicit `HEAD`
+  entry whenever `GET` is registered; there is **no implicit
+  `OPTIONS`**. The one deliberate relaxation of "list only registered
+  methods": `Allow` lists `HEAD` even when no explicit `HEAD` pattern
+  exists, because `GET` implies it — exactly as ServeMux does. The
+  `Allow` value is deterministic for any build; construction happens
+  only on the cold 405 path and may allocate.
 - `HEAD` is served by the `GET` handler when no `HEAD` pattern exists
   (the handler must not write a body — standard contract, documented);
   an explicit `HEAD` pattern wins.
@@ -163,13 +169,13 @@ through `SetPathValue` (which stores into `req`'s existing map).
   node's `handlers` array is sized at `Build` from the registered
   method set.
 - 405 synthesis at the leaf enumerates the node's non-nil method IDs
-  in the deterministic order of §3 (common canonical order, then
-  custom lexicographic), building the `Allow` value once per request
-  — the only per-request allocation on the 405 path, none on the
-  match path.
-- The one decode pass, the trie walk, and method resolution together
-  contain no closures and no indirect calls; the disassembly gate
-  (`docs/verification.md` §6) applies to the whole walk.
+  and emits the `Allow` value per §3's ServeMux-exact rule
+  (lexicographic, implicit `HEAD` with `GET`, no implicit `OPTIONS`).
+  This is the cold 405 path: it may allocate the `Allow` string. The
+  match path itself allocates nothing.
+- The one decode pass (§2), the trie walk, and method resolution
+  together contain no closures and no indirect calls; the disassembly
+  gate (`docs/verification.md` §6) applies to the whole walk.
 
 ## 7. Middleware and helpers
 
@@ -197,10 +203,14 @@ through `SetPathValue` (which stores into `req`'s existing map).
   `MustBuild` panics on them by design); param decoding (`%20`, `%2F`,
   double-encoded) pinned against ServeMux.
 - Method-space tests: a custom token method (`MKCOL`, `REPORT`,
-  case-sensitive `get` vs `GET`) matches exactly and appears in
-  `Allow` in deterministic order; 405 `Allow` lists exactly the
-  registered methods for the path; the common-method inline path and
-  the custom fallback table agree with `Handle` registrations.
+  case-sensitive `get` vs `GET`) matches exactly and participates in
+  `Allow` lexicographically; the common-method inline path and the
+  custom fallback table agree with `Handle` registrations.
+- 405 `Allow` unit tests pinned to ServeMux semantics: lexicographic
+  order; implicit `HEAD` present whenever `GET` is registered (even
+  with no explicit `HEAD` pattern) and absent otherwise; no implicit
+  `OPTIONS`; custom methods sorted in with the rest; the exact
+  `Allow` string asserted (e.g. `GET, HEAD, POST`, `MKCOL, REPORT`).
 - No-panic fuzz over random paths against a built table.
 - Bench: match of a 4-segment route with 2 params at 100k patterns;
   gate = 8.3% floor + `perf stat` + disassembly (no indirect call in the

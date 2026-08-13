@@ -200,7 +200,7 @@ single-encoding rule, not D7.
 | rule | compatible-default | strict-security |
 |---|---|---|
 | name token / CRLF / no obs-fold | enforced (D1–D3) | enforced |
-| version exactly `HTTP/1.0`/`HTTP/1.1` | enforced (D10: deliberate; Go accepts any `HTTP/X.Y` and the h2 preface) | enforced |
+| version exactly `HTTP/1.0`/`HTTP/1.1` | enforced (D10: deliberate; Go accepts broader single-digit `HTTP/X.Y` versions and the special h2 client preface — as detailed in D10, not any arbitrary form) | enforced |
 | duplicate Host | rejected (D4, parity closure) | rejected |
 | missing or empty Host (1.1) | `ErrMissingHost` (caller maps to 400; D5) | rejected |
 | target controls and invalid escapes | rejected (D8, parity closure) | rejected |

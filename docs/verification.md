@@ -98,7 +98,11 @@ Generated pattern sets (params, wildcards, hosts, trailing slashes,
 method mixes) and generated request corpora; for each request, compare
 simdhttp vs `net/http.ServeMux` on: matched route, `PathValue` contents,
 405 vs 404, `Allow` header, trailing-slash redirect (status and
-location — parity: both redirect with 307, probed on Go 1.26.5).
+location — parity: both redirect with 307, probed on Go 1.26.5). The
+`Allow` comparison is exact: both sides must emit the same string —
+lexicographic over the methods registered for the path, implicit
+`HEAD` when `GET` is registered, no implicit `OPTIONS` (ServeMux's
+`matchingMethods` + `slices.Sorted`; pinned in router unit tests too).
 Agreement is required in compatible mode; strict mode's documented
 supersets are listed explicitly per case, not discovered at test time.
 `OPTIONS *` is excluded from the differential — ServeMux alone answers

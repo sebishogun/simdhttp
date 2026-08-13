@@ -20,10 +20,12 @@ running the verification gates.
 The shipped surface is exactly the head parser (`docs/architecture.md`
 §1): `Parse`, `Request`, `Header`, `ErrIncomplete`, `ErrMalformed`, all
 views aliasing the input, one reused scratch slice. The 2026-08-13 audit
-verified eight gaps (G1–G8, architecture §2, records in `docs/wrong.md`
-§2–6), of which G1 (long-value control scan stops at a tab) is also
-invisible to the differential fuzz. The production design's first phase
-closes the safety gaps; everything else stacks on top.
+verified eight gaps (G1–G8, architecture §2); their findings and the
+benchmark/gate records are recorded in `docs/wrong.md` (no section
+numbering equivalence is implied). Of those, G1 (long-value control
+scan stops at a tab) is also invisible to the differential fuzz. The
+production design's first phase closes the safety gaps; everything else
+stacks on top.
 
 ## Architecture decisions
 
