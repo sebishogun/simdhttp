@@ -81,11 +81,14 @@ with equal precedence) instead of silently choosing one, matching
   method. Method-less patterns (ServeMux's `HandleFunc("/path", …)`,
   which matches any method) are **outside simdhttp's API by design**:
   the router is built on the explicit token-method surface, and the
-  differential never generates method-less patterns. At `Build`,
-  every registered method — and the common set `GET, HEAD, POST, PUT,
-  PATCH, DELETE, OPTIONS, CONNECT, TRACE` — is compiled into a dense
-  ID space (§6). Matching is exact and case-sensitive (`get` does not
-  match `GET`; the parser already rejects non-token methods).
+  differential never generates method-less patterns. An empty-method
+  `Handle("", …)` registration cannot be rejected at registration
+  time — `Handle` returns nothing and never panics — so it surfaces
+  as a `Build` error (§1). At `Build`, every registered method — and
+  the common set `GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS,
+  CONNECT, TRACE` — is compiled into a dense ID space (§6). Matching
+  is exact and case-sensitive (`get` does not match `GET`; the parser
+  already rejects non-token methods).
 - A path matched by patterns of *other* methods registers `405 Method
   Not Allowed` with an `Allow` header built **ServeMux-exactly** (Go
   1.26.5): the methods registered for the path — including custom
@@ -133,13 +136,21 @@ only.
   - both are registered — then each matches its own form exactly
     (no merging);
   - only `/users/` exists and a request for `/users` arrives — the
-    router answers with a **307 Temporary Redirect** to `/users/` in
-    compatible mode; in strict mode it answers `404`. The redirect
-    mode is a `Build` option (`RedirectTrailingSlash bool`), default
-    compatible = on. This is **parity with ServeMux**, which also
-    redirects trailing-slash mismatches with 307 (probed on Go 1.26.5:
-    `GET /users` → 307, `Location: /users/`); the differential asserts
-    status and location agreement.
+    router redirects with a **307 Temporary Redirect** to `/users/`
+    in compatible mode, **but only when the slash variant has a
+    pattern matching the request method** (ServeMux's
+    `matchOrRedirect` requires an exact match on `path+"/"` for the
+    request method). When no method matches the slash variant, the
+    compatible-mode verdict is **405**, and `Allow` unions the methods
+    registered on the slash variant per §3 (probed on Go 1.26.5:
+    `GET /users` with `GET /users/` registered → 307,
+    `Location: /users/`; `GET /items` with only `POST /items/`
+    registered → 405, `Allow: POST`). Strict mode answers `404`
+    instead of either. The redirect mode is a `Build` option
+    (`RedirectTrailingSlash bool`), default compatible = on. This is
+    parity with ServeMux; the differential asserts status and
+    location agreement, and the 405-with-union path is asserted in
+    the Allow tests (§3, §8).
 
 ## 6. The match loop (hot path)
 
@@ -205,10 +216,12 @@ through `SetPathValue` (which stores into `req`'s existing map).
   (explicit-token-method patterns only — method-less ServeMux
   patterns are out of simdhttp's API, §3, and never generated) and
   request corpora must agree on match, params, 405/Allow,
-  trailing-slash redirect (status **and** location — both are 307),
-  and `PathValue` contents (`docs/verification.md` §5). `OPTIONS *`
-  is excluded: it is simdhttp-specific (ServeMux alone 400s; the
-  standard server intercepts it unless
+  trailing-slash redirect (status **and** location — both are 307,
+  and only when the slash variant matches the request method; the
+  method-mismatch case is a 405 with the unioned `Allow` on both
+  sides), and `PathValue` contents (`docs/verification.md` §5).
+  `OPTIONS *` is excluded: it is simdhttp-specific (ServeMux alone
+  400s; the standard server intercepts it unless
   `DisableGeneralOptionsHandler` is set) and is asserted directly in
   router tests.
 - Conflict and precedence unit tests (conflicts are `Build` errors;
@@ -217,8 +230,9 @@ through `SetPathValue` (which stores into `req`'s existing map).
 - Method-space tests: a custom token method (`MKCOL`, `REPORT`,
   case-sensitive `get` vs `GET`) matches exactly and participates in
   `Allow` lexicographically; the common-method inline path and the
-  custom fallback table agree with `Handle` registrations; a method-
-  less `Handle("", …)` registration is rejected at registration time.
+  custom fallback table agree with `Handle` registrations; an
+  empty-method `Handle("", …)` registration surfaces as a `Build`
+  error (registration itself returns nothing and never panics).
 - 405 `Allow` unit tests pinned to ServeMux semantics: lexicographic
   order; implicit `HEAD` present whenever `GET` is registered (even
   with no explicit `HEAD` pattern) and absent otherwise; no implicit

@@ -719,15 +719,19 @@ lacks a slash** (e.g. `POST` registered only on `/users/`, request
 `GET /users` → `Allow` includes `POST`); exact strings asserted (e.g.
 `GET, HEAD, POST`); a custom method (`MKCOL`) matches exactly, is
 case-sensitive (`mkcol` does not match), and sorts into `Allow` with
-the rest; a method-less `Handle("", …)` registration is rejected;
+the rest; an empty-method `Handle("", …)` registration surfaces as a
+`Build` error (registration returns nothing and never panics);
 `HEAD` served by the `GET` handler unless an explicit `HEAD` exists;
 `OPTIONS *` answered with `Allow` — the test calls `ServeHTTP`
 directly (or runs a server with `DisableGeneralOptionsHandler: true`),
 because a standard `http.Server` intercepts `OPTIONS *` before the
 handler (`globalOptionsHandler`: 200, no `Allow`; probed on Go
 1.26.5), and ServeMux alone answers 400; trailing slash:
-`RedirectTrailingSlash` on → **307** to the slash form — parity with
-ServeMux, which also redirects with 307 (probed), off → 404; explicit
+`RedirectTrailingSlash` on → **307** to the slash form **when the
+slash variant has a pattern matching the request method** — parity
+with ServeMux, which also redirects with 307 (probed), and **405
+with `Allow` unioning the slash variant's methods when no method
+matches** (probed) — off → 404; explicit
 `/users` + `/users/` both match their exact forms.
 
 **Step 2: Run to verify they fail** — FAIL.

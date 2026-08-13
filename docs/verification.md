@@ -98,7 +98,10 @@ Generated pattern sets (params, wildcards, hosts, trailing slashes,
 method mixes) and generated request corpora; for each request, compare
 simdhttp vs `net/http.ServeMux` on: matched route, `PathValue` contents,
 405 vs 404, `Allow` header, trailing-slash redirect (status and
-location — parity: both redirect with 307, probed on Go 1.26.5). The
+location — parity: both redirect with 307, probed on Go 1.26.5, and
+only when the slash variant has a pattern matching the request method;
+the method-mismatch case is asserted as 405 with the unioned `Allow`
+on both sides). The
 `Allow` comparison is exact: both sides must emit the same string —
 lexicographic over the methods registered for the path, implicit
 `HEAD` when `GET` is registered, no implicit `OPTIONS`, and the
