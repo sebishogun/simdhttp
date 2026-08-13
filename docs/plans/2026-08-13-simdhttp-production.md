@@ -154,6 +154,8 @@ git commit -m "http1: close the tab-stops-the-control-scan hole"
 **Files:**
 - Modify: `http1/parser.go`
 - Modify: `http1/parser_test.go`
+- Add: `testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878` (the
+  duplicate-Host fuzz regression seed, committed in Step 3)
 
 **Step 1: Write the failing test**
 
@@ -177,7 +179,30 @@ func TestDuplicateHostRejected(t *testing.T) {
 Run: `go test ./http1/ -run TestDuplicateHostRejected`
 Expected: FAIL
 
-**Step 3: Implement**
+**Step 3: Pin the fuzz-found input as a regression corpus seed**
+
+Commit the input the differential fuzz already found — the documented
+G2 case (`docs/wrong.md` §3): `0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n`,
+accepted by simdhttp, rejected by net/http ("too many Host headers").
+A fresh clone must pin the red case before and with the fix, not carry
+it as a local artifact:
+
+- Add the Go fuzz corpus file
+  `testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878` — the
+  `go test fuzz v1` file whose name is the first 16 hex digits of the
+  SHA-256 of its own content (Go 1.26.5 corpus naming) and whose
+  payload is `[]byte("0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n")`. The
+  file lands in the worktree when a fuzz run reaches the failure
+  (`go test -fuzz=FuzzParseAgainstNetHTTP`); commit it as-is.
+- Do **not** add an `f.Add` seed in `fuzz_test.go` source — the corpus
+  file is the seed; source seeds are added in Task 8's corpus step.
+- With the seed committed, `go test ./http1/` (and the fuzz smoke)
+  fails on the un-fixed parser — the seed acts as a regression test
+  once Go finds it in `testdata/fuzz/` — and passes after the fix.
+  The fix in Step 4 turns it green; the seed and the fix ship in the
+  same commit so the clone is never green before the fix.
+
+**Step 4: Implement**
 
 In the header loop, track the first Host occurrence with
 `bytes.EqualFold` over a precomputed constant slice — no string
@@ -195,16 +220,16 @@ if bytes.EqualFold(name, hostHeader) {
 }
 ```
 
-**Step 4: Run tests**
+**Step 5: Run tests**
 
 Run: `go test ./http1/`
-Expected: PASS
+Expected: PASS (the seed in Step 3 was red before the fix, green now)
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```bash
-git add http1/
-git commit -m "http1: reject duplicate Host headers (parity)"
+git add http1/ testdata/fuzz/
+git commit -m "http1: reject duplicate Host headers (parity); pin fuzz regression seed"
 ```
 
 ### Task 4: Host presence and format validation

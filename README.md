@@ -130,3 +130,26 @@ streaming body framing, helpers, and middleware, with safety work staged
 first — is specified in [docs/roadmap.md](docs/roadmap.md). Until the
 roadmap's Phase 0 lands, treat the parser as internally consistent but not
 yet hardened.
+
+## Documentation
+
+- [docs/architecture.md](docs/architecture.md) — shipped surface, gaps
+  G1–G8, behavior policy D1–D10, production target.
+- [docs/roadmap.md](docs/roadmap.md) — the staged, safety-first plan;
+  nothing in it is built yet.
+- [docs/lld/router.md](docs/lld/router.md) — router LLD (target).
+- [docs/lld/http1-head-parser.md](docs/lld/http1-head-parser.md) — head
+  parser LLD (today and target).
+- [docs/lld/http1-body-framing.md](docs/lld/http1-body-framing.md) —
+  body framing LLD (target).
+- [docs/lld/net-http-integration.md](docs/lld/net-http-integration.md) —
+  net/http integration LLD (target).
+- [docs/verification.md](docs/verification.md) — every gate.
+- [docs/wrong.md](docs/wrong.md) — the record of findings that cost
+  measurement.
+- [docs/plans/2026-08-13-simdhttp-production-design.md](docs/plans/2026-08-13-simdhttp-production-design.md) —
+  the approved production design.
+- [docs/plans/2026-08-13-simdhttp-production.md](docs/plans/2026-08-13-simdhttp-production.md) —
+  the future TDD implementation plan (not to be executed until tasked).
+- [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) — the working rules
+  for agents; AGENTS.md is canonical.

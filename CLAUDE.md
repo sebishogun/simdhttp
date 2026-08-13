@@ -4,32 +4,44 @@ This file is the concise self-contained version. **AGENTS.md is the
 canonical rule file** — when this file and AGENTS.md disagree, AGENTS.md
 wins and this file is wrong.
 
-## Status and boundary
+## Status
 
-simdhttp is tracked here on the `docs/v120-documentation` branch for
-documentation work. Current state: the repo ships only the borrowed-buffer
-HTTP/1 request-head parser (`simdhttp.Parse`); the production target
-(router, `http1` framing, helpers) is designed but not built
-(`README.md`, `docs/architecture.md`, `docs/roadmap.md`).
+simdhttp ships exactly the borrowed-buffer HTTP/1 request-head parser
+`simdhttp.Parse` — no router, no body framing, no middleware, no
+server — and nothing is released by tag (verified: no tags on the
+repository). Ownership and concurrency are part of the contract: the
+caller owns the bytes and their lifetime (fields alias the buffer); a
+`Request` is not safe for concurrent use (`Parse` reuses its scratch);
+the net/http contract is one-directional with deviations D1–D10
+(`docs/architecture.md` §2.1). The roadmap, production design, and plan
+are the approved target, not shipped. The differential fuzz smoke is
+**red by design** on the duplicate-Host gap G2 (`docs/wrong.md` §3)
+until the roadmap's Phase 0 (production plan Tasks 1–8) fixes the
+parser — read the red, never pipe it.
 
-**Non-negotiable:** only `.md` files may change on this branch. Never
-touch Go sources, tests, fuzz corpora, baselines, `go.mod`/`go.sum`, the
-`Makefile`, workflows, `docs/bench.svg` or any asset, or release records.
-Never push; commits stay local. If a doc claim cannot be made true, the
-doc changes — the code never does.
+## Task scope
 
-## Read order
+Task scope is per-task instruction: the branch and the files a task may
+touch come from the task text. A documentation-only task is that task's
+scope, not a standing rule about the repository. Push only on explicit
+request; commit locally in house style when the task asks for it; never
+amend a committed change without instruction.
 
-1. `AGENTS.md` — canonical rules.
-2. `README.md` — front page, shipped surface, gaps, historical chart.
-3. `docs/architecture.md` — gaps G1–G8, behavior policy D1–D10, target.
-4. `docs/roadmap.md` — staged phases.
-5. `docs/lld/` — router, head parser, body framing, integration LLDs.
-6. `docs/verification.md` — every gate.
-7. `docs/wrong.md` — findings; a new finding belongs there whether or
-   not code changed.
-8. `docs/plans/2026-08-13-simdhttp-production*.md` — future TDD plan
-   (not to be executed on this branch).
+## Read order (required; matches AGENTS.md)
+
+1. `README.md` — front page, shipped surface, gaps, historical chart.
+2. `docs/architecture.md` — gaps G1–G8, behavior policy D1–D10, target.
+3. `docs/roadmap.md` — staged phases; nothing shipped.
+4. `docs/plans/2026-08-13-simdhttp-production-design.md` — approved design.
+5. `docs/lld/router.md` — router LLD (target).
+6. `docs/lld/http1-head-parser.md` — head parser LLD.
+7. `docs/lld/http1-body-framing.md` — body framing LLD (target).
+8. `docs/lld/net-http-integration.md` — integration LLD (target).
+9. `docs/verification.md` — every gate.
+10. `docs/wrong.md` — findings; a new finding belongs there whether or
+    not code changed.
+11. `docs/plans/2026-08-13-simdhttp-production.md` — future TDD plan;
+    execute only when a task says so.
 
 ## Non-negotiables
 
@@ -62,6 +74,9 @@ doc changes — the code never does.
   `tee` and ends in an unconditional `@echo`, so it always succeeds —
   a recorded gate flaw (`docs/wrong.md` §8, `docs/verification.md` §2),
   advisory until the gates rework.
+- **Verification and release gates.** Every commit passes the gates in
+  `docs/verification.md`; a release runs the full gated set and exists
+  only as a tag. There is no release today (no tags).
 - **The record:** findings that cost a measurement go into
   `docs/wrong.md`; the entry is the deliverable.
 

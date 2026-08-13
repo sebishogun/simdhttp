@@ -3,21 +3,71 @@
 This file is the **canonical** rule file. `CLAUDE.md` is the concise,
 self-contained edition for Claude; when the two disagree, this file wins.
 
-## Scope: documentation only
+## What this repository is
 
-This repository tracks the simdhttp project on the `docs/v120-documentation`
-branch. The only files that may change here are Markdown documents. The
-following are **frozen** — never modified, added, or removed:
+simdhttp is a Go library for HTTP/1 request-head parsing on the
+[simd](https://github.com/sebishogun/simd) kernels. The shipped surface
+is exactly the borrowed-buffer request-head parser `simdhttp.Parse`;
+there is no router, no body framing, no middleware, and no server.
+Ownership and concurrency are part of the contract: every `Request`
+field aliases the caller's buffer, the caller owns the bytes and their
+lifetime, and a `Request` is not safe for concurrent use — `Parse`
+reuses its scratch. Compatibility with `net/http` is one-directional —
+never accept what the standard reader rejects within the documented
+scope — and every deviation is enumerated in `docs/architecture.md`
+§2.1 (D1–D10).
 
-- `parser.go`, `*.go` sources and any future Go files
-- `*_test.go`, including fuzz corpora and baselines
-- `go.mod`, `go.sum`
-- `Makefile` and any workflow files
-- `docs/bench.svg` and any assets
-- `testdata/`, release records, tags
+## Task scope
 
-Nothing is ever pushed from this checkout. Commits stay local until the
-task owner moves them.
+Task scope is per-task instruction: the branch and the files a task may
+touch come from the task text, not from this file. A documentation-only
+task is that task's scope, not a standing rule about the repository. In
+a documentation-only task, only Markdown documents change — Go sources,
+tests, fuzz corpora, `go.mod`/`go.sum`, the `Makefile`, workflows,
+assets, and release records stay untouched. Do not push without an
+explicit request; commit locally in house style when the task asks for
+it, and never amend a committed change without instruction.
+
+## Shipped status (facts, not aspirations)
+
+- **Parser-only.** The shipped surface is `simdhttp.Parse`; everything
+  else in the docs is target.
+- **No tagged release.** Verified: the repository has no tags; the code
+  ships as the branch tip until a gated release exists.
+- **Ownership / compat / concurrency.** The caller owns the bytes and
+  their lifetime (fields alias the buffer); a `Request` is not safe for
+  concurrent use; the net/http contract is one-directional with
+  deviations D1–D10 (`docs/architecture.md` §2.1).
+- **Roadmap-not-shipped.** The roadmap, production design, and plan are
+  the approved target — nothing in them is shipped until it is in the
+  code and the tests. Do not write prose that makes an open item sound
+  built.
+- **Verification and release gates.** Every commit passes the gates in
+  `docs/verification.md`; a release runs the full gated set and exists
+  only as a tag. There is no release today.
+- **G2 red fuzz blocker.** The differential fuzz smoke is red by design
+  on the duplicate-Host case (`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n`,
+  `docs/wrong.md` §3) until the roadmap's Phase 0 fixes the parser —
+  the production plan's Tasks 1–8 own that fix. A red run is read,
+  never piped; the finding is the deliverable.
+
+## Read order (required)
+
+1. `README.md` — front page, shipped surface, gaps, historical chart.
+2. `docs/architecture.md` — shipped surface, gaps G1–G8, behavior
+   policy D1–D10, target.
+3. `docs/roadmap.md` — staged phases; nothing in it is shipped.
+4. `docs/plans/2026-08-13-simdhttp-production-design.md` — the approved
+   production design.
+5. `docs/lld/router.md` — router LLD (target).
+6. `docs/lld/http1-head-parser.md` — head parser LLD.
+7. `docs/lld/http1-body-framing.md` — body framing LLD (target).
+8. `docs/lld/net-http-integration.md` — integration LLD (target).
+9. `docs/verification.md` — every gate.
+10. `docs/wrong.md` — the record of findings; a new finding belongs
+    there whether or not code changed.
+11. `docs/plans/2026-08-13-simdhttp-production.md` — the future TDD
+    plan; execute it only when a task says so.
 
 ## Claims must be sourced, and verified before they are written
 
@@ -116,6 +166,8 @@ Run the gates bare, in this order, and read the output:
    trailing-whitespace drift in files touched.
 
 Then `git diff --stat` and a full read of the diff before committing.
-Commit messages follow the repository style (`docs: ...`). Never commit
-Go, tests, modules, the Makefile, workflows, assets, baselines, or release
-records on this branch.
+Commit messages follow the repository style (`docs: ...` for
+documentation commits). A commit's contents follow the task scope: a
+documentation-only task commits Markdown only — never Go, tests,
+modules, the Makefile, workflows, assets, baselines, or release
+records.
