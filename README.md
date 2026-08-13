@@ -73,10 +73,15 @@ addressing them.
 | Body / chunked / trailers | not parsed at all — no framing, no `BodyReader` | full framing |
 | Limits | none: unbounded head size, header count, value length | server head bounded by `MaxHeaderBytes` (default 1 MiB) |
 
-The differential fuzz's one-direction contract (never accept what net/http
-rejects) has held for 35M+ executions, but it cannot pass judgment it never
-reaches: the long-value case above needs a ≥ 64-byte value that its short
-seeds do not grow into.
+The differential fuzz asserts the one-direction contract (never accept
+what net/http rejects). It held for 35M+ executions in the commit
+history, and on 2026-08-13 it finally reached the duplicate-Host case:
+`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n` is accepted by simdhttp and
+rejected by net/http ("too many Host headers") — the documented gap G2
+(`docs/wrong.md` §3). Until the roadmap's Phase 0 fixes the parser, the
+fuzz smoke gate is red on exactly this case, and the fuzz cannot pass
+judgment on cases its short seeds never reach either: the long-value
+gap above needs a ≥ 64-byte value, which they do not grow into.
 
 ## Speed (historical)
 

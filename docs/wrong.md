@@ -86,8 +86,17 @@ same value are equivalent to one.
 
 **How it surfaced.** Differential run, 2026-08-13:
 `Host: a.com\r\nHost: a.com` — net/http errors, simdhttp returns both.
+The differential fuzz reached the same case on 2026-08-13 evening and
+now fails its one-direction assertion on it: the input
+`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n` (two empty Host lines on an
+HTTP/1.0 request line) is accepted by simdhttp and rejected by
+net/http. The failure is reproducible from the seed corpus at baseline
+coverage; the fuzz smoke gate is therefore red until Phase 0 fixes the
+parser — a red gate that is itself the documented finding, not a
+launderable flake.
 
-**Source.** Live differential; Go 1.26.5 `net/http/request.go:1139`.
+**Source.** Live differential; Go 1.26.5 `net/http/request.go:1139`;
+`go test -fuzz=FuzzParseAgainstNetHTTP` on 2026-08-13.
 
 ---
 

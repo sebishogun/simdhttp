@@ -70,7 +70,10 @@ doc changes — the code never does.
 1. `go test ./...`
 2. `gofmt -l .` and `go vet ./...`
 3. `go test -race ./...`
-4. `go test -fuzz=FuzzParseAgainstNetHTTP -fuzztime=15s .`
+4. `go test -fuzz=FuzzParseAgainstNetHTTP -fuzztime=15s .` — currently
+   **red by design** (the fuzz reaches the documented duplicate-Host
+   gap G2; wrong.md §3, verification.md intro). Read the red, never
+   pipe it.
 5. Markdown checks: links inside `docs/` resolve; no trailing
    whitespace in touched files.
 6. `git diff --stat` and a full read of the diff; commit message in

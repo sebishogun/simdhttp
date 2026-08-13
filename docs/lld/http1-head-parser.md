@@ -76,9 +76,13 @@ G1–G5 from `docs/architecture.md` §2, with the mechanism:
 | G5 CL/TE framing | headers are opaque name/value pairs | `ReadRequest` dedupes identical `Content-Length`s and rejects differing ones; with `Transfer-Encoding` present — and on the server too — `Content-Length` is deleted and the request frames chunked (probed: server 200, chunked body) |
 
 G1 is unreachable by the differential fuzz (seeds are short; 15 s smoke
-does ~3.9 M execs without growing a ≥ 64-byte value). G2–G5 are reachable
-and simply not asserted in the corpus — the corpus has no duplicate Host,
-no control-byte target, no double Content-Length.
+does ~3.9 M execs without growing a ≥ 64-byte value). G2 is no longer
+just "not asserted": on 2026-08-13 evening the fuzz reached the
+duplicate-Host case (`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n`) and now
+fails its one-direction assertion on it (wrong.md §3) — the fuzz smoke
+gate stays red until Phase 0 closes G2. G3–G5 remain reachable but
+unasserted in the corpus — no duplicate Host, no control-byte target,
+no double Content-Length.
 
 ## 3. Hardened design (`simdhttp/http1`)
 

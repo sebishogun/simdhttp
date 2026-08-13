@@ -109,6 +109,9 @@ Run the gates bare, in this order, and read the output:
 2. `gofmt -l .` and `go vet ./...`
 3. `go test -race ./...`
 4. a fuzz smoke: `go test -fuzz=FuzzParseAgainstNetHTTP -fuzztime=15s .`
+   (currently **red by design**: the fuzz reaches the documented
+   duplicate-Host gap G2 — wrong.md §3, verification.md intro. A red
+   run must be read, not piped; the finding is the deliverable.)
 5. Markdown checks: links inside `docs/` resolve, no dead references, no
    trailing-whitespace drift in files touched.
 
