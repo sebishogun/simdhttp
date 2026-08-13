@@ -1,0 +1,110 @@
+# captured 2026-08-13T22:39:15Z load:3.76 go version go1.26.2 linux/amd64
+-test.shuffle 1786660755445417781
+goos: linux
+goarch: amd64
+pkg: github.com/sebishogun/simdhttp
+cpu: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S          
+BenchmarkMatchStaticServeMux-32      	12581479	        93.38 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStaticServeMux-32      	12559120	        96.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStaticServeMux-32      	12503890	        94.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStaticServeMux-32      	12726132	        94.01 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStaticServeMux-32      	12215151	        96.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStaticServeMux-32      	12432865	        94.36 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSweep/simdhttp/none-32      	75755025	        15.49 ns/op	1419.89 MB/s
+BenchmarkSweep/simdhttp/none-32      	79983831	        15.55 ns/op	1415.06 MB/s
+BenchmarkSweep/simdhttp/none-32      	77466368	        15.64 ns/op	1406.52 MB/s
+BenchmarkSweep/simdhttp/none-32      	76303166	        15.58 ns/op	1411.77 MB/s
+BenchmarkSweep/simdhttp/none-32      	73712514	        15.70 ns/op	1401.01 MB/s
+BenchmarkSweep/simdhttp/none-32      	73786620	        15.59 ns/op	1411.27 MB/s
+BenchmarkSweep/nethttp/none-32       	 4291125	       286.9 ns/op	  76.67 MB/s
+BenchmarkSweep/nethttp/none-32       	 4247966	       286.3 ns/op	  76.84 MB/s
+BenchmarkSweep/nethttp/none-32       	 4284982	       281.6 ns/op	  78.13 MB/s
+BenchmarkSweep/nethttp/none-32       	 4114160	       281.0 ns/op	  78.29 MB/s
+BenchmarkSweep/nethttp/none-32       	 4054332	       282.4 ns/op	  77.92 MB/s
+BenchmarkSweep/nethttp/none-32       	 4125913	       285.9 ns/op	  76.96 MB/s
+BenchmarkSweep/simdhttp/typical-9-32 	 4496678	       275.4 ns/op	1518.06 MB/s
+BenchmarkSweep/simdhttp/typical-9-32 	 4340234	       275.9 ns/op	1514.78 MB/s
+BenchmarkSweep/simdhttp/typical-9-32 	 4320235	       272.1 ns/op	1536.48 MB/s
+BenchmarkSweep/simdhttp/typical-9-32 	 4453006	       270.8 ns/op	1543.71 MB/s
+BenchmarkSweep/simdhttp/typical-9-32 	 4291197	       275.0 ns/op	1520.00 MB/s
+BenchmarkSweep/simdhttp/typical-9-32 	 4272718	       272.9 ns/op	1531.75 MB/s
+BenchmarkSweep/nethttp/typical-9-32  	  799748	      1523 ns/op	 274.51 MB/s
+BenchmarkSweep/nethttp/typical-9-32  	  790654	      1523 ns/op	 274.44 MB/s
+BenchmarkSweep/nethttp/typical-9-32  	  839252	      1565 ns/op	 267.01 MB/s
+BenchmarkSweep/nethttp/typical-9-32  	  741978	      1585 ns/op	 263.69 MB/s
+BenchmarkSweep/nethttp/typical-9-32  	  743434	      1536 ns/op	 272.09 MB/s
+BenchmarkSweep/nethttp/typical-9-32  	  746067	      1610 ns/op	 259.64 MB/s
+BenchmarkSweep/simdhttp/many-100-32  	  498181	      2300 ns/op	1526.72 MB/s
+BenchmarkSweep/simdhttp/many-100-32  	  442292	      2316 ns/op	1516.52 MB/s
+BenchmarkSweep/simdhttp/many-100-32  	  533460	      2298 ns/op	1528.61 MB/s
+BenchmarkSweep/simdhttp/many-100-32  	  517398	      2240 ns/op	1567.58 MB/s
+BenchmarkSweep/simdhttp/many-100-32  	  455508	      2283 ns/op	1538.34 MB/s
+BenchmarkSweep/simdhttp/many-100-32  	  529544	      2269 ns/op	1547.68 MB/s
+BenchmarkSweep/nethttp/many-100-32   	  103450	     11089 ns/op	 316.71 MB/s
+BenchmarkSweep/nethttp/many-100-32   	  110146	     11439 ns/op	 307.03 MB/s
+BenchmarkSweep/nethttp/many-100-32   	  108960	     11581 ns/op	 303.27 MB/s
+BenchmarkSweep/nethttp/many-100-32   	  110938	     11446 ns/op	 306.83 MB/s
+BenchmarkSweep/nethttp/many-100-32   	  102261	     11469 ns/op	 306.21 MB/s
+BenchmarkSweep/nethttp/many-100-32   	  102122	     11412 ns/op	 307.74 MB/s
+BenchmarkSweep/simdhttp/giant-value-32         	  137848	      8429 ns/op	3805.59 MB/s
+BenchmarkSweep/simdhttp/giant-value-32         	  137640	      8542 ns/op	3755.44 MB/s
+BenchmarkSweep/simdhttp/giant-value-32         	  139035	      8442 ns/op	3799.62 MB/s
+BenchmarkSweep/simdhttp/giant-value-32         	  139872	      8501 ns/op	3773.38 MB/s
+BenchmarkSweep/simdhttp/giant-value-32         	  139285	      8521 ns/op	3764.57 MB/s
+BenchmarkSweep/simdhttp/giant-value-32         	  134881	      8432 ns/op	3804.53 MB/s
+BenchmarkSweep/nethttp/giant-value-32          	   36728	     33133 ns/op	 968.17 MB/s
+BenchmarkSweep/nethttp/giant-value-32          	   35160	     33074 ns/op	 969.89 MB/s
+BenchmarkSweep/nethttp/giant-value-32          	   34814	     33626 ns/op	 953.96 MB/s
+BenchmarkSweep/nethttp/giant-value-32          	   34585	     33997 ns/op	 943.55 MB/s
+BenchmarkSweep/nethttp/giant-value-32          	   35642	     32417 ns/op	 989.56 MB/s
+BenchmarkSweep/nethttp/giant-value-32          	   37731	     33330 ns/op	 962.45 MB/s
+BenchmarkMatchStatic-32                        	16524381	        72.96 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStatic-32                        	16954478	        71.89 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStatic-32                        	16332870	        71.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStatic-32                        	16444898	        71.53 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStatic-32                        	16664446	        73.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchStatic-32                        	14982480	        73.21 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatch4Segment-32                      	14931468	        74.87 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatch4Segment-32                      	16512537	        73.46 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatch4Segment-32                      	15079483	        78.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatch4Segment-32                      	15689304	        72.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatch4Segment-32                      	14612992	        75.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatch4Segment-32                      	16854240	        71.69 ns/op	       0 B/op	       0 allocs/op
+BenchmarkQueryRaw-32                           	19118109	        62.90 ns/op	       0 B/op	       0 allocs/op
+BenchmarkQueryRaw-32                           	19113921	        62.53 ns/op	       0 B/op	       0 allocs/op
+BenchmarkQueryRaw-32                           	19122108	        61.82 ns/op	       0 B/op	       0 allocs/op
+BenchmarkQueryRaw-32                           	18873760	        63.20 ns/op	       0 B/op	       0 allocs/op
+BenchmarkQueryRaw-32                           	19325890	        62.42 ns/op	       0 B/op	       0 allocs/op
+BenchmarkQueryRaw-32                           	19270681	        63.21 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParse/simdhttp-32                     	 4851194	       244.5 ns/op
+BenchmarkParse/simdhttp-32                     	 4931535	       245.1 ns/op
+BenchmarkParse/simdhttp-32                     	 4704830	       248.1 ns/op
+BenchmarkParse/simdhttp-32                     	 4745911	       251.4 ns/op
+BenchmarkParse/simdhttp-32                     	 4951632	       248.7 ns/op
+BenchmarkParse/simdhttp-32                     	 4999273	       244.7 ns/op
+BenchmarkParse/net-http-32                     	  886932	      1373 ns/op
+BenchmarkParse/net-http-32                     	  794017	      1396 ns/op
+BenchmarkParse/net-http-32                     	  865326	      1363 ns/op
+BenchmarkParse/net-http-32                     	  918784	      1350 ns/op
+BenchmarkParse/net-http-32                     	  945188	      1326 ns/op
+BenchmarkParse/net-http-32                     	  912236	      1446 ns/op
+BenchmarkMatch4SegmentServeMux-32              	10446549	       113.6 ns/op	      48 B/op	       2 allocs/op
+BenchmarkMatch4SegmentServeMux-32              	 9715273	       115.7 ns/op	      48 B/op	       2 allocs/op
+BenchmarkMatch4SegmentServeMux-32              	10228983	       113.9 ns/op	      48 B/op	       2 allocs/op
+BenchmarkMatch4SegmentServeMux-32              	10329555	       113.6 ns/op	      48 B/op	       2 allocs/op
+BenchmarkMatch4SegmentServeMux-32              	10265370	       111.8 ns/op	      48 B/op	       2 allocs/op
+BenchmarkMatch4SegmentServeMux-32              	10109023	       111.1 ns/op	      48 B/op	       2 allocs/op
+BenchmarkQueryNetURL-32                        	 3936981	       278.4 ns/op	     480 B/op	       7 allocs/op
+BenchmarkQueryNetURL-32                        	 4625857	       278.3 ns/op	     480 B/op	       7 allocs/op
+BenchmarkQueryNetURL-32                        	 4365130	       271.6 ns/op	     480 B/op	       7 allocs/op
+BenchmarkQueryNetURL-32                        	 4173225	       289.7 ns/op	     480 B/op	       7 allocs/op
+BenchmarkQueryNetURL-32                        	 4151542	       288.6 ns/op	     480 B/op	       7 allocs/op
+BenchmarkQueryNetURL-32                        	 4153197	       279.1 ns/op	     480 B/op	       7 allocs/op
+BenchmarkBuild100k-32                          	       9	 119402296 ns/op
+BenchmarkBuild100k-32                          	       9	 120448661 ns/op
+BenchmarkBuild100k-32                          	       9	 120221980 ns/op
+BenchmarkBuild100k-32                          	       9	 122277106 ns/op
+BenchmarkBuild100k-32                          	       9	 127412484 ns/op
+BenchmarkBuild100k-32                          	       9	 125589195 ns/op
+PASS
+ok  	github.com/sebishogun/simdhttp	144.268s
