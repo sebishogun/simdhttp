@@ -67,10 +67,13 @@ What the disassembly says that nothing else does:
 
 ## Benchmarks
 
-The code-layout noise floor here is **8.3%**. Anything smaller cannot be
-told from nothing by wall-clock, and more samples do not help — layout
-noise is per-build, not per-run. When a change is expected to be worth
-less than that:
+The code-layout noise floor is the **8.3%** family policy, inherited
+from the measured record in the simd repository's `CLAUDE.md` — it has
+not been re-measured in this repository (future work), so treat it as
+inherited policy, not a locally measured constant. Anything smaller
+cannot be told from nothing by wall-clock, and more samples do not help
+— layout noise is per-build, not per-run. When a change is expected to
+be worth less than that:
 
 - compare **instructions retired** and **cycles** with `perf stat -e
   instructions:u,cycles:u`, which are layout-independent;
@@ -84,7 +87,8 @@ average under 1.
 `pipefail`: the pipe reports the last command's status and the failure
 vanishes. Run gates bare, or `set -o pipefail` first. Note that the
 current `Makefile` `bench-check` target pipes through `tee` without
-`pipefail` — a known gate flaw, recorded in `docs/wrong.md` and
+`pipefail` **and ends in an unconditional `@echo`**, so it always
+succeeds — a known gate flaw, recorded in `docs/wrong.md` and
 `docs/verification.md`, scheduled for the gates rework.
 
 ## The record

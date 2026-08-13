@@ -63,7 +63,7 @@ overwritten; a caller must not use the request after an error.
 - The request line validates the method inline; version check is a
   length + prefix compare.
 
-## 2. Verified gaps (differential, 2026-08-13, Go 1.26.2)
+## 2. Verified gaps (differential, 2026-08-13, Go 1.26.5)
 
 G1–G5 from `docs/architecture.md` §2, with the mechanism:
 
@@ -71,9 +71,9 @@ G1–G5 from `docs/architecture.md` §2, with the mechanism:
 |---|---|---|
 | G1 control scan | kernel returns the *first* byte in `\x7f ∪ <0x20`; if it is `\t` the guard passes and scanning stops — later controls unseen | net/http rejects the same value ("malformed MIME header line") |
 | G2 duplicate Host | no Host bookkeeping at all | "too many Host headers", even for identical values |
-| G3 Host presence/format | no Host code at all | server: "missing required Host header" (HTTP/1.1, server.go), "malformed Host header" (`ValidHostHeader`) |
-| G4 target controls | target is only split, never scanned | net/url: "invalid control character in URL" |
-| G5 CL/TE framing | headers are opaque name/value pairs | `ReadRequest`: "message cannot contain multiple Content-Length headers" |
+| G3 Host presence/format | no Host code at all | server: "missing required Host header" (HTTP/1.1), "malformed Host header"; present-but-empty `Host:` accepted |
+| G4 target controls and escapes | target is only split, never scanned | net/url: "invalid control character in URL", "invalid URL escape" (`%zz`, `%2`) |
+| G5 CL/TE framing | headers are opaque name/value pairs | `ReadRequest` dedupes identical `Content-Length`s and rejects differing ones; with `Transfer-Encoding` present it deletes `Content-Length` and frames chunked; the *server* rejects CL+TE |
 
 G1 is unreachable by the differential fuzz (seeds are short; 15 s smoke
 does ~3.9 M execs without growing a ≥ 64-byte value). G2–G5 are reachable
@@ -100,14 +100,18 @@ borrowed-buffer contract and the bench shape.
 
 ### 3.2 Limits (both profiles, bounds differ)
 
-- `MaxHeadSize` (compatible 64 KiB, strict 16 KiB)
+- `MaxHeadSize` (compatible 2 MiB, strict 256 KiB)
 - `MaxHeaderCount` (compatible 100, strict 50)
 - `MaxHeaderValueLen` (compatible 1 MiB, strict 64 KiB)
 - `MaxRequestLineLen` (compatible 8 KiB, strict 4 KiB)
-- Each limit returns a typed error; the adapter layer maps it to a status.
-- Enforced *during* the scan: the `IndexAll` pass bounds the walk, and the
-  value scan checks length before the kernel call, so an oversized head
-  costs one pass, not an allocation.
+
+`MaxHeadSize` deliberately exceeds `MaxHeaderValueLen` so that a
+single oversized value reaches the value-limit error and is not
+pre-empted by the head-size check. Each limit returns a typed error;
+the caller's server loop maps it to a status. Enforced *during* the
+scan: the `IndexAll` pass bounds the walk, and the value scan checks
+length before the kernel call, so an oversized head costs one pass,
+not an allocation.
 
 ### 3.3 G1 fix (control scan)
 
@@ -134,50 +138,69 @@ In the header loop, case-insensitively match `Host`:
 
 - count occurrences; second occurrence -> `ErrMalformed` (parity with
   "too many Host headers", both profiles);
-- HTTP/1.1 request line + zero `Host` lines -> `ErrMalformed` in strict;
-  in compatible, surface a typed `ErrMissingHost` the adapter maps to
-  400 (net/http's server rejects at read time; a pure parser in
-  compatible mode reports, the caller decides);
-- format: `httpguts.ValidHostHeader`-equivalent rule — no spaces,
-  no controls, brackets balanced for IPv6 literals, no comma in the
-  authority — via an inline scan (no `net/http` import in the parser;
-  the rule is small and tested against `ValidHostHeader` differentially).
+- HTTP/1.1 request line with zero `Host` lines, or with an empty
+  `Host:` value, -> `ErrMalformed` in strict; in compatible, surface a
+  typed `ErrMissingHost` (400). Treating empty as missing is an
+  enumerated deviation (D5): Go's server accepts a present-but-empty
+  `Host:` (probed, 200 OK);
+- format: the **simdhttp host rule**, deliberately stricter than Go's.
+  Go's `httpguts.ValidHostHeader` is a pure byte-table scan — it
+  allows `,` (sub-delims) and has no bracket-balance logic (probed:
+  `Host: a.com,b.com` and unbalanced `Host: [::1` both accepted by the
+  Go server). The simdhttp rule is: no space, tab, control, or comma
+  anywhere in the authority; `[` requires a matching `]`, and `]` a
+  preceding `[`; empty value handled as above — via an inline scan (no
+  `net/http` import in the parser; the rule is small and its cases are
+  asserted in tests against the probed Go verdicts, with the comma and
+  bracket rows pinned as deviations D9, not parity).
 
-### 3.5 G4 fix (target controls)
+### 3.5 G4 fix (target controls and escapes)
 
 One control scan over `Target` (same kernel + tab rule as values, minus
-the tab allowance: a tab in a target is a control and is rejected).
-URI *semantics* stay with net/url (the fuzz contract in `fuzz_test.go`
-stands). In compatible mode a target that net/url would reject is still
-accepted by the parser — the adapter's net/url pass rejects it, exactly
-as net/http does; in strict mode the parser rejects it directly.
+the tab allowance: a tab in a target is a control and is rejected),
+plus a percent-escape check: every `%` must be followed by two hex
+digits. Both profiles reject controls and invalid escapes — parity with
+`ReadRequest`, which rejects them via net/url (D8). URI *semantics*
+beyond that stay with net/url (the fuzz contract in `fuzz_test.go`
+stands): a well-formed but semantically odd target (e.g. an absolute
+URI) is the caller's business.
 
 ### 3.6 G5 fix (framing fields)
 
 Framing is owned by `http1` (the body layer), not the head parser — see
 `docs/lld/http1-body-framing.md` §2–4. The head parser's contribution:
 expose `Content-Length` lines and `Transfer-Encoding` lines raw, and
-reject a *second* `Content-Length` line at parse time (parity, G5). CL+TE
-combination and TE shape are the body layer's verdict.
+reject a *second* `Content-Length` line at parse time. That rejection is
+an enumerated deviation (D6): Go's `ReadRequest` dedupes identical
+`Content-Length` values and only rejects differing ones; simdhttp
+rejects every duplicate in both profiles. The CL+TE combination and TE
+shape are the body layer's framing-table verdict (D7, parity with Go's
+single-encoding rule).
 
 ### 3.7 Profiles
 
 | rule | compatible-default | strict-security |
 |---|---|---|
-| name token / CRLF / no obs-fold | enforced | enforced |
+| name token / CRLF / no obs-fold | enforced (D1–D3) | enforced |
 | duplicate Host | rejected | rejected |
-| missing Host (1.1) | `ErrMissingHost` (caller maps) | rejected |
-| target control bytes | parser scans; adapter's net/url decides | rejected |
-| CL+TE / double CL / non-final TE | rejected (matches Go server) | rejected |
+| missing or empty Host (1.1) | `ErrMissingHost` (caller maps to 400; D5) | rejected |
+| target controls and invalid escapes | rejected (D8, parity with Go) | rejected |
+| duplicate CL (any) | rejected (D6) | rejected |
+| CL+TE | rejected (D7) | rejected |
+| TE exactly `chunked` | enforced (parity with Go's single-encoding rule) | enforced |
 | unknown `Expect` | surfaced, caller decides | rejected |
-| limits | 64 KiB / 100 / 1 MiB | 16 KiB / 50 / 64 KiB |
+| limits | 2 MiB / 100 / 1 MiB | 256 KiB / 50 / 64 KiB |
 | obs-text (≥ 0x80) in values | accepted (parity) | accepted (parity; RFC 9110 obs-text) |
 
 ## 4. Tests
 
 - Differential corpus extended: duplicate Host (identical and differing),
-  missing/empty Host on 1.0 and 1.1, control bytes in target, double CL,
-  CL+TE, tab-before-control long values at 63/64/65 B and 1 KiB, obs-fold.
+  missing/empty Host on 1.0 and 1.1, target controls and invalid escapes
+  (`%zz`, `%2`), duplicate CL (identical and differing), CL+TE, TE
+  `gzip, chunked`, tab-before-control long values at 63/64/65 B and
+  1 KiB, obs-fold, comma and bracket Hosts. Deviation rows (D5–D9) are
+  asserted one-directionally — simdhttp rejects, and the Go verdict is
+  recorded from the probed oracle — never as parity.
 - The G1 regression test fails on the current parser and passes after the
   fix (TDD: it is written first).
 - Fuzz seeds extended with a ≥ 64-byte value containing `\t` + `\x00`.

@@ -37,10 +37,11 @@ inputs the origin would reject differently.
 ### D2. net/http-native, ecosystem-preserving
 
 The router is an `http.Handler`; requests stay `*http.Request`; params
-go through `PathValue`/`SetPathValue` (Go ≥ 1.22, go.mod is 1.26.2); no
-custom context; `httptest`, HTTP/2, TLS, proxies, observability, and
-WebSocket hijacking keep working because nothing is wrapped that does
-not have to be. The optional error adapter is opt-in.
+go through `PathValue`/`SetPathValue` (Go ≥ 1.22; go.mod's floor is
+1.26.2, the oracle is the 1.26.5 toolchain); no custom context;
+`httptest`, HTTP/2, TLS, proxies, observability, and WebSocket hijacking
+keep working because nothing is wrapped that does not have to be. The
+optional error adapter is opt-in.
 
 ### D3. Borrowed-buffer discipline everywhere
 
@@ -50,11 +51,14 @@ the matched path. Limits are enforced during scans, not after.
 
 ### D4. Two profiles
 
-`Compatible` matches net/http's verdicts (with the three documented
-strictness points); `Strict` is a documented superset (tighter limits,
-rejects unusual Hosts, non-canonical framing fields, unknown
-expectations). The framing decision table has one implementation; the
-strict profile is a filter over it, never a second parser.
+`Compatible` is application-compatible with net/http, not
+byte-for-byte-permissive: it matches Go's verdicts except where a
+deviation is enumerated in `docs/architecture.md` §2.1 (D1–D9 — e.g.
+D5–D7 deliberately reject ambiguous framing forms Go's reader accepts).
+`Strict` is a documented superset (tighter limits, rejects unusual
+Hosts, non-canonical framing fields, unknown expectations). The framing
+decision table has one implementation; the strict profile is a filter
+over it, never a second parser.
 
 ### D5. Hot loops are concrete
 
@@ -89,9 +93,10 @@ may import `encoding/json`.
 - Current behavior: `parser.go`, tests, `Makefile`, `go.mod`/`go.sum`.
 - History: commits `a60a44b`…`5c2bee2`; `docs/wrong.md` entries 1, 7.
 - Verdicts: live differential against net/http on the machine's Go
-  (1.26.2) — the oracle is the executable.
+  1.26.5 toolchain — the oracle is the executable.
 - Limits and smuggling policy: RFC 9110/9112 and the Go server's
-  enforcement, pinned by the corpora in `docs/verification.md` §3.
+  enforcement, pinned by the corpora in `docs/verification.md` §3, with
+  the enumerated deviations in `docs/architecture.md` §2.1 (D1–D9).
 - Performance: historical amd64/AVX-512 chart (README) plus the gates
   in `docs/verification.md` §6–7; no new claim from shape alone.
 

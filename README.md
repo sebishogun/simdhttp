@@ -22,9 +22,11 @@ n, err := simdhttp.Parse(&req, buf)
 block through the terminating blank line — from the start of `buf`.
 
 - `Request` carries `Method`, `Target`, `Proto`, and `Headers`.
-- Every field aliases the input buffer; parsing allocates nothing after the
-  first call, when one scratch slice (`lineEnds`) and the `Headers` backing
-  array are sized. The caller owns the bytes and their lifetime.
+- Every field aliases the input buffer; after warmup, `Parse` allocates
+  nothing for heads no larger than the largest one parsed so far — the
+  `lineEnds` scratch and the `Headers` backing array grow on demand when
+  a larger head arrives, and are then reused. The caller owns the bytes
+  and their lifetime.
 - `Header.Name` is the name as written (not canonicalized); `Header.Value`
   is the value with optional whitespace trimmed.
 - `consumed` counts bytes through the terminating blank line.
@@ -36,36 +38,38 @@ block through the terminating blank line — from the start of `buf`.
 The version must be exactly `HTTP/1.0` or `HTTP/1.1`; methods and header
 names must be RFC 9110 tokens; header values may not contain control bytes
 other than HTAB; and line endings must be CRLF. Request-target semantics are
-the caller's job (net/url), not this package's.
+the caller's job (net/url), not this package's — today the parser does not
+even check the target for control bytes or invalid percent-escapes (see the
+gap table below).
 
 ## Contract with net/http
 
-Accepted heads are checked against `net/http`'s `ReadRequest` on a corpus,
-under random mutation, and under differential fuzz: anything the standard
-reader rejects, this rejects, and accepted requests carry byte-identical
-fields with OWS trimmed. In three places it is deliberately **stricter**,
-all request-smuggling surface:
-
-- a space inside a header field name (the standard reader tolerates it);
-- bare-LF line endings (the standard reader tolerates them);
-- obs-fold continuation lines (the standard reader joins them).
+Accepted heads are checked against `net/http`'s `ReadRequest` on a corpus
+and under differential fuzz: anything the standard reader rejects (within
+the documented scope — net/url target semantics excluded), this rejects,
+and accepted requests carry byte-identical fields with OWS trimmed. (The
+test's random-mutation loop is a no-panic smoke, not a verdict comparison:
+it never asserts an outcome.) Where simdhttp is deliberately stricter than
+Go — bare-LF line endings, spaces inside field names, obs-fold
+continuations, and the future Host/CL policy — each deviation is
+enumerated in the canonical list, [docs/architecture.md §2.1](docs/architecture.md).
 
 ## Known safety and compatibility gaps
 
-Verified against the source and net/http on 2026-08-13 (Go 1.26.2). None of
+Verified against the source and net/http on 2026-08-13 (Go 1.26.5). None of
 these are fixed yet; the current parser is a parsing primitive, not a
 hardened front door. Do not put this parser in front of an origin without
 addressing them.
 
-| gap | what happens today | net/http |
+| gap | what happens today | Go 1.26.5 |
 |---|---|---|
 | Long header-value control bytes | a value ≥ 64 bytes whose first HTAB precedes a control byte (NUL, DEL, …) slips the control scan — the kernel returns the tab, the guard passes, the scan stops | rejects |
 | Duplicate `Host` | any second `Host` line is accepted, even an identical one | rejects ("too many Host headers") |
-| Missing / malformed `Host` | an HTTP/1.1 head with no `Host`, an empty `Host:`, or a malformed host is accepted | server rejects ("missing required Host header", "malformed Host header") |
-| Request-target controls | NUL, DEL and other control bytes in the target are accepted | rejects (net/url control-character check) |
-| `Content-Length` framing | `Content-Length` + `Transfer-Encoding` together, or two differing `Content-Length`s, are accepted | rejects multiple `Content-Length` |
+| Missing / malformed `Host` | an HTTP/1.1 head with no `Host`, an empty `Host:`, or a malformed host is accepted | server rejects missing and malformed Host; a present-but-empty `Host:` is accepted |
+| Request-target controls and escapes | NUL, DEL and other control bytes, and invalid percent-escapes (`%zz`, `%2`), are accepted in the target | rejects (net/url control-character and escape checks) |
+| `Content-Length` framing | `Content-Length` + `Transfer-Encoding` together, and any duplicate `Content-Length`, are accepted | `ReadRequest` deletes `Content-Length` when `Transfer-Encoding` is present and frames chunked; rejects *differing* duplicate `Content-Length`, dedupes identical ones; the server rejects the CL+TE combination |
 | Body / chunked / trailers | not parsed at all — no framing, no `BodyReader` | full framing |
-| Limits | none: unbounded head size, header count, value length | bounded by `MaxHeaderBytes` and the 10 MB field-value cap |
+| Limits | none: unbounded head size, header count, value length | server head bounded by `MaxHeaderBytes` (default 1 MiB) |
 
 The differential fuzz's one-direction contract (never accept what net/http
 rejects) has held for 35M+ executions, but it cannot pass judgment it never
@@ -79,8 +83,18 @@ seeds do not grow into.
 The chart and table are **historical measurements from August 2026 on
 amd64/AVX-512** — this machine, this toolchain, the code at commit `5c2bee2`.
 They are evidence for the sweep-then-fix story below, not a compatibility
-promise for any other machine. Reproduce with `make bench` (one process,
-shuffled, minimum of six).
+promise for any other machine.
+
+Two provenance notes on the frozen SVG (`docs/bench.svg` cannot change):
+
+- the quoted numbers are the **min-of-three** runs recorded with the
+  original README (`a60a44b` measured the typical head; `530ac05` shipped
+  the four-shape table); the SVG's caption saying "minimum of six" is a
+  drawing-time slip that predates the `-count=6` Makefile target;
+- the SVG rounds ratios for display: the typical row's 1.05× renders as
+  "1.1×". The **table above is authoritative**; `make bench` (one process,
+  shuffled, `-count=6`) is today's reproduction command, not the source
+  of the quoted numbers, and may differ on any machine or day.
 
 | shape | simdhttp | net/http | |
 |---|---|---|---|

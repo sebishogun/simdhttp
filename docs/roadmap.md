@@ -12,10 +12,13 @@ immediate successor:
 
 - G1: control scan must not stop at an HTAB hit (LLD `http1-head-parser.md` §3.3).
 - G2/G3: duplicate Host rejected; HTTP/1.1 Host presence and format
-  validation with compatible/strict profiles (LLD §3.4).
-- G4: control bytes in the request-target rejected (LLD §3.5).
-- G5: second `Content-Length` rejected at parse time; CL+TE verdict
-  owned by the body layer, enforced at the adapter (LLD §3.6).
+  validation with compatible/strict profiles (LLD §3.4; empty-as-missing
+  is deviation D5).
+- G4: control bytes and invalid percent-escapes in the request-target
+  rejected (D8, LLD §3.5).
+- G5: second `Content-Length` rejected at parse time (deviation D6);
+  CL+TE verdict owned by the body layer's framing table (D7; LLD
+  `http1-body-framing.md` §4).
 - Limits: head size, header count, request-line length, value length —
   typed errors, enforced during the scan (LLD §3.2).
 - Tests first (TDD, `docs/plans/2026-08-13-simdhttp-production.md`

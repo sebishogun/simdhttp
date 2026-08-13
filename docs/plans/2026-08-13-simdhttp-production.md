@@ -25,9 +25,11 @@ and updates docs to shipped reality. Hot loops stay concrete: no
 interfaces, no indirect calls; seams only for codec/error/observability/
 future server, each passing disassembly + `perf stat` gates.
 
-**Tech Stack:** Go 1.26.2, `github.com/sebishogun/simd` v1.20.0,
-`github.com/sebishogun/simdjson`, net/http (`Handler`, `ResponseWriter`,
-`PathValue`/`SetPathValue`), `httptest`, `perf stat`, `go tool objdump`.
+**Tech Stack:** Go 1.26.5 toolchain (the oracle for every verdict in
+this plan; go.mod keeps its `go 1.26.2` floor), `github.com/sebishogun/simd`
+v1.20.0, `github.com/sebishogun/simdjson`, net/http (`Handler`,
+`ResponseWriter`, `PathValue`/`SetPathValue`), `httptest`, `perf stat`,
+`go tool objdump`.
 
 ---
 
@@ -241,10 +243,17 @@ Expected: FAIL
 Add `ErrMissingHost = errors.New("simdhttp: missing or empty Host header")`.
 After the header loop, before the blank-line check: if the request line
 is HTTP/1.1, apply the profile policy (strict: reject; compatible:
-return `ErrMissingHost`; both count the empty value as missing). Add a
-host format check (inline scan, no `net/http` import): no space, tab,
-control, or comma in the authority; balanced brackets for `[v6]` forms.
-Validate it differentially against `httpguts.ValidHostHeader` in tests.
+return `ErrMissingHost`; both count the empty value as missing —
+deviation D5: Go's server accepts a present-but-empty `Host:`). Add
+the simdhttp host-format check (inline scan, no `net/http` import):
+no space, tab, control, or comma in the authority; `[` requires a
+matching `]` and vice versa. This rule is deliberately stricter than
+Go's `httpguts.ValidHostHeader` (a byte-table scan that allows comma
+and has no bracket-balance logic — probed on Go 1.26.5: the server
+accepts `Host: a.com,b.com` and unbalanced `Host: [::1`). The tests
+assert the simdhttp rule's cases and pin the comma and bracket rows
+as deviation D9 with the probed Go verdicts, never as
+`ValidHostHeader` parity.
 
 **Step 4: Run tests**
 
@@ -258,7 +267,7 @@ git add http1/
 git commit -m "http1: validate Host presence and format per profile"
 ```
 
-### Task 5: Reject control bytes in the request-target
+### Task 5: Reject control bytes and invalid escapes in the request-target
 
 **Files:**
 - Modify: `http1/parser.go`
@@ -268,7 +277,7 @@ git commit -m "http1: validate Host presence and format per profile"
 
 ```go
 func TestTargetControls(t *testing.T) {
-	for _, tgt := range []string{"/a\x00b", "/a\x7fb", "/a\x1fb"} {
+	for _, tgt := range []string{"/a\x00b", "/a\x7fb", "/a\x1fb", "/%zz", "/a%2"} {
 		var req Request
 		if _, err := Parse(&req, []byte("GET "+tgt+" HTTP/1.1\r\nHost: x\r\n\r\n"), Compatible); err == nil {
 			t.Fatalf("target %q accepted", tgt)
@@ -280,8 +289,11 @@ func TestTargetControls(t *testing.T) {
 **Step 2: Run to verify it fails** — `go test ./http1/ -run TestTargetControls` FAIL.
 
 **Step 3: Implement** — one control scan over `Target` (same kernel,
-no tab allowance: a tab in a target is rejected). Both profiles reject:
-net/http rejects these targets too, so this is parity, not strictness.
+no tab allowance: a tab in a target is rejected) plus a percent-escape
+check: every `%` must be followed by two hex digits. Both profiles
+reject: net/http rejects these targets too (net/url: "invalid control
+character in URL", "invalid URL escape"), so this is parity, not
+strictness (deviation D8 records it as target parity/hardening).
 
 **Step 4: Run tests** — `go test ./http1/` PASS.
 
@@ -289,7 +301,7 @@ net/http rejects these targets too, so this is parity, not strictness.
 
 ```bash
 git add http1/
-git commit -m "http1: reject control bytes in the request-target"
+git commit -m "http1: reject control bytes and invalid escapes in the request-target"
 ```
 
 ### Task 6: Reject duplicate Content-Length; expose framing fields
@@ -318,11 +330,15 @@ func TestDuplicateContentLength(t *testing.T) {
 
 **Step 3: Implement**
 
-- Reject a second `Content-Length` line (parity with `ReadRequest`).
+- Reject a *second* `Content-Length` line in both profiles. This is an
+  enumerated deviation (D6), not parity: Go's `ReadRequest` dedupes
+  identical `Content-Length` values and only rejects differing ones
+  (verified on Go 1.26.5). The identical-duplicate test above is the
+  deviation's regression test.
 - Add raw accessors for the framing layer: `ContentLengthLines [][]byte`
   and `TransferEncodingLines [][]byte` (borrowed views, filled during
   the walk). The CL+TE verdict itself is the framing table's job
-  (Task 10), per the LLD.
+  (Task 10, deviation D7), per the LLD.
 
 **Step 4: Run tests** — `go test ./http1/` PASS.
 
@@ -344,16 +360,21 @@ git commit -m "http1: reject duplicate Content-Length, expose framing fields"
 ```go
 func TestLimits(t *testing.T) {
 	var req Request
+	// 60 headers > the strict 50; head stays small so the count check fires.
 	_, err := Parse(&req, []byte(strings.Repeat("GET / HTTP/1.1\r\nX: v\r\n", 60)+"\r\n"), Strict)
 	if err != ErrTooManyHeaders {
 		t.Fatalf("header-count limit: %v", err)
 	}
-	// 1<<20+1 exceeds the compatible 1 MiB value limit; 1<<20 alone is at it.
+	// 1<<20+1 exceeds the compatible 1 MiB value limit. Reachable because
+	// MaxHeadSize (2 MiB compatible) exceeds MaxHeaderValueLen, so the
+	// head-size check does not pre-empt it.
 	_, err = Parse(&req, []byte("GET / HTTP/1.1\r\nX: "+strings.Repeat("v", 1<<20+1)+"\r\n\r\n"), Compatible)
 	if err != ErrValueTooLarge {
 		t.Fatalf("value limit: %v", err)
 	}
-	_, err = Parse(&req, []byte(strings.Repeat("X: v\r\n", 0)+strings.Repeat("a", 1<<20)+"\r\n\r\n"), Compatible)
+	// ~500 KiB head, every value under the strict 64 KiB value limit:
+	// the entry check fires ErrHeadTooLarge before the count check.
+	_, err = Parse(&req, []byte(strings.Repeat("GET / HTTP/1.1\r\nX: "+strings.Repeat("v", 1<<13)+"\r\n", 60)+"\r\n"), Strict)
 	if err != ErrHeadTooLarge {
 		t.Fatalf("head limit: %v", err)
 	}
@@ -371,7 +392,9 @@ var (
 	ErrValueTooLarge  = errors.New("simdhttp: header value exceeds limit")
 )
 
-// per-profile bounds (http1-head-parser.md §3.2)
+// per-profile bounds (http1-head-parser.md §3.2).
+// MaxHeadSize deliberately exceeds MaxHeaderValueLen so the value-limit
+// error is reachable and not pre-empted by the head-size check.
 type limits struct {
 	headSize, requestLine, headerCount, valueLen int
 }
@@ -439,18 +462,35 @@ table (`docs/lld/http1-body-framing.md` §4), e.g.:
 func TestFramingCLPlusTE(t *testing.T) {
 	h := []byte("Content-Length: 5")
 	if v := Framing(h, [][]byte{[]byte("chunked")}, Compatible); v != ErrAmbiguousFraming {
-		t.Fatalf("CL+TE: %v", v)
+		t.Fatalf("CL+TE: %v", v) // deviation D7: Go's ReadRequest would delete CL and frame chunked
 	}
 }
 
-func TestFramingNonFinalTE(t *testing.T) {
-	v := Framing(nil, [][]byte{[]byte("gzip")}, Compatible)
-	if v != ErrBadTransferEncoding {
-		t.Fatalf("identity TE: %v", v)
+func TestFramingTEPolicy(t *testing.T) {
+	// Exactly one TE field with exactly "chunked" — parity with Go's
+	// single-encoding rule (verified: Go rejects "gzip, chunked" and
+	// two chunked fields alike).
+	if v := Framing(nil, [][]byte{[]byte("chunked")}, Compatible); v != nil {
+		t.Fatalf("plain chunked: %v", v)
 	}
-	v = Framing(nil, [][]byte{[]byte("gzip, chunked")}, Compatible)
-	if v != nil {
-		t.Fatalf("gzip, chunked: %v", v)
+	for _, te := range [][]byte{
+		[]byte("gzip"),
+		[]byte("gzip, chunked"),
+		[]byte("identity"),
+	} {
+		if v := Framing(nil, [][]byte{te}, Compatible); v != ErrBadTransferEncoding {
+			t.Fatalf("TE %q: %v", te, v)
+		}
+	}
+	if v := Framing(nil, [][]byte{[]byte("chunked"), []byte("chunked")}, Compatible); v != ErrBadTransferEncoding {
+		t.Fatalf("two TE fields: %v", v)
+	}
+}
+
+func TestFramingDuplicateCL(t *testing.T) {
+	// Deviation D6: Go dedupes identical values; simdhttp rejects any duplicate.
+	if v := Framing([][]byte{[]byte("5"), []byte("5")}, nil, Compatible); v != ErrAmbiguousFraming {
+		t.Fatalf("identical duplicate CL: %v", v)
 	}
 }
 ```
@@ -624,11 +664,14 @@ func TestBuildConflict(t *testing.T) {
 
 **Step 2: Run to verify they fail** — FAIL (no symbols).
 
-**Step 3: Implement** — registration copies patterns; `Build` compiles
-the segment trie (`docs/lld/router.md` §6), detects precedence ties as
-errors, freezes the router; `ServeHTTP` walks static → param →
-wildcard, resolves the method, allocates nothing on the matched path,
-writes params via `SetPathValue`. No interfaces inside.
+**Step 3: Implement** — registration copies patterns and never panics;
+`Build` compiles the segment trie (`docs/lld/router.md` §6), detects
+precedence ties as errors, freezes the router; `ServeHTTP` walks static
+→ param → wildcard, resolves the method, allocates nothing on the
+matched path, writes params via `SetPathValue`. Add the explicit
+`MustBuild() *Router` helper that panics on a `Build` error — the only
+panic path for a bad table, for use in tests and top-level setup. No
+interfaces inside.
 
 **Step 4: Run tests** — PASS.
 
@@ -647,8 +690,10 @@ git commit -m "router: immutable build and segment-trie matching"
 
 **Step 1: Write the failing tests** — 405 with `Allow` for
 method-mismatched paths; `HEAD` served by the `GET` handler unless an
-explicit `HEAD` exists; `OPTIONS *` answered with `Allow`; trailing
-slash: `RedirectTrailingSlash` on → 301 to the slash form, off → 404;
+explicit `HEAD` exists; `OPTIONS *` answered with `Allow` (explicit
+simdhttp behavior — Go's ServeMux answers 400, probed on Go 1.26.5);
+trailing slash: `RedirectTrailingSlash` on → **307** to the slash form
+(simdhttp's documented difference from ServeMux's 301), off → 404;
 explicit `/users` + `/users/` both match their exact forms.
 
 **Step 2: Run to verify they fail** — FAIL.
@@ -693,7 +738,10 @@ git commit -m "router: host-pattern matching"
 
 **Step 1: Write the differential harness** — generated pattern sets and
 request corpora (`docs/verification.md` §5): same route, same
-`PathValue`, same 405/404/Allow, same redirect. And the match bench:
+`PathValue`, same 405/404/Allow. Two cases asserted as documented
+differences, not agreement: trailing-slash redirect status (simdhttp
+307 vs ServeMux 301; location must agree) and `OPTIONS *` (simdhttp's
+explicit behavior; ServeMux 400s). And the match bench:
 
 ```go
 func BenchmarkMatch4Segment(b *testing.B) {

@@ -10,8 +10,10 @@ hardening.
 For a request with a non-empty body, the length is determined by, in
 order:
 
-1. `Transfer-Encoding` present -> chunked (only when the final encoding
-   is `chunked`; anything else is rejected, §4);
+1. `Transfer-Encoding` present -> chunked (exactly one TE field with
+   exactly the value `chunked`, case-insensitive; anything else —
+   including `gzip, chunked` and a second TE field — is rejected, §4,
+   matching Go's single-encoding rule);
 2. else `Content-Length` present -> fixed length;
 3. else the request has no body (`GET`, `HEAD`, `DELETE`-style; RFC
    semantics apply: a `Content-Length: 0` is an empty body, not a
@@ -68,22 +70,28 @@ func (b *BodyReader) Consumed() int64        // bytes read from the connection
 `MaxBodySize` is enforced as bytes served, not bytes allocated: the
 reader streams; only the current chunk and trailer section are held.
 Exceeding a limit yields a typed error (`ErrBodyTooLarge`,
-`ErrChunkLineTooLong`, …) mapped by the adapter to `413`/`400`.
+`ErrChunkLineTooLong`, …) mapped by the caller's server loop to
+`413`/`400`.
 
 ## 4. Exact ambiguity policy
 
-These verdicts are the contract; they match the Go 1.26 server where
-stated, and are a superset in strict mode. `reject` always means a
-framing error from `NewBodyReader`/first `Read`, never a silent choice:
+These verdicts are the contract. The oracle column shows verified Go
+1.26.5 behavior for `ReadRequest` and, where they differ, the server.
+`reject` always means a framing error from `NewBodyReader`/first
+`Read`, never a silent choice. Rows marked **deviation** are
+deliberately stricter than `ReadRequest` and are enumerated in
+`docs/architecture.md` §2.1 (D6, D7); every other row is parity.
 
-| input | compatible | strict | net/http server |
+| input | compatible | strict | Go 1.26.5 (verified) |
 |---|---|---|---|
-| `Content-Length` + `Transfer-Encoding` | reject | reject | reject (CL ignored → guarded) |
-| two `Content-Length` lines, equal values | reject | reject | reject |
-| two `Content-Length` lines, differing | reject | reject | reject |
-| `Transfer-Encoding: chunked` + another value (e.g. `gzip, chunked`) | accept, chunked body | reject | accept (gzip, chunked final) |
-| `Transfer-Encoding` final not `chunked` (e.g. `identity`, `gzip`) | reject | reject | reject (unsupported) |
-| `Transfer-Encoding: chunked` twice | reject | reject | reject |
+| `Content-Length` + `Transfer-Encoding` (**D7**) | reject | reject | ReadRequest deletes CL and frames chunked; the *server* rejects the combination |
+| two `Content-Length` lines, equal values (**D6**) | reject | reject | ReadRequest dedupes, accepts |
+| two `Content-Length` lines, differing | reject | reject | reject ("message cannot contain multiple Content-Length headers") |
+| empty `Content-Length:` | reject | reject | reject ("invalid empty Content-Length") |
+| `Transfer-Encoding: gzip, chunked` | reject | reject | reject ("unsupported transfer encoding") — Go supports exactly one TE field with exactly the value `chunked` |
+| `Transfer-Encoding: identity` / `gzip` | reject | reject | reject (unsupported) |
+| `Transfer-Encoding: chunked` twice | reject | reject | reject ("too many transfer encodings") |
+| `Transfer-Encoding: chunked` (single, exact) | chunked body | chunked body | chunked body — parity |
 | `Expect: 100-continue` | surfaced; caller may send `100 Continue` | reject unless exactly `100-continue` | honored |
 | `Connection: close` | no body framing effect; hop-by-hop list recorded | same | same |
 | body bytes beyond `Content-Length` | left on wire, `Consumed` reports | left on wire, `Consumed` reports | consumed as next request |
@@ -100,7 +108,8 @@ disagree" class of attack has no second implementation to disagree.
 - `Close` before EOF drains up to `MaxDrainSize` bytes of the remaining
   body so the connection can be reused, then reports whether the drain
   completed; a body larger than the drain budget is aborted (connection
-  closed by the adapter) — never read unboundedly, never hung.
+  closed by the caller's server loop) — never read unboundedly, never
+  hung.
 - Pipelined requests: the next head parse starts at the reported
   `Consumed` offset; the parser/reader split exists precisely so the next
   head can be parsed while the previous body drains.

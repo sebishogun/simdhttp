@@ -10,29 +10,34 @@ server in v1 and no fork of net/http.
 
 ```
 net/http.Server ──► simdhttp.Router.ServeHTTP ──► route handlers
-                        │
-                        └─► simdhttp/http1.Parse + BodyReader  (when the
-                            server delegates head/body reading)
 ```
 
 Two modes of use:
 
 1. **Handler mode (default).** The router is registered on a standard
-   `http.Server`; net/http does the connection loop, head reading, and
-   body framing with its own `maxHeaderBytes` etc. simdhttp's hardened
-   parser is *not* in this path; it is used for the pieces net/http
-   does not optimize. This mode is the compatibility floor: everything
+   `http.Server`; net/http owns the connection loop, head reading, and
+   body framing with its own `MaxHeaderBytes` etc. The router, helpers,
+   and middleware operate exclusively on net/http's parsed
+   `*http.Request`. This mode is the compatibility floor: everything
    works today, nothing about the request lifecycle changes.
-2. **Framing mode (roadmap Phase 1+).** A connection wrapper hands the
-   bytes to `simdhttp/http1.Parse` + `BodyReader` and constructs the
-   `*http.Request` from parsed fields — the strict-security profile's
-   real use. The boundary contract: the wrapper must satisfy the
-   `http.ResponseWriter`/`Hijacker`/`Flusher`/`ReaderFrom`/`Pusher`
-   interface set the surrounding ecosystem expects, or explicitly not
-   (documented per wrapper).
+2. **Independent reader mode (roadmap Phase 1+).** `simdhttp/http1.Parse`
+   + `BodyReader` consume a `*bufio.Reader` over a connection the
+   *caller* owns — there is no way to hand a standard `http.Server`
+   this parser: net/http reads and frames requests itself and cannot
+   delegate that to external code. Independent use therefore requires
+   the caller's own connection loop (an `Accept`/`Read`/`Write` loop
+   over `net.Conn`, or an internal test harness), which is exactly the
+   future custom server's territory (architecture §3.7, deferred). The
+   `*http.Request` constructed from parsed fields is a plain net/http
+   request so handlers stay portable. In this mode the caller's loop is
+   responsible for the `ResponseWriter`-adjacent behaviors the
+   ecosystem may expect (`Hijacker`, `Flusher`, `ReaderFrom`, `Pusher`)
+   — it either implements them on its own writer or documents that it
+   does not.
 
 The parser/body layer never talks to the network; it consumes a
-`*bufio.Reader`. The server owns sockets and deadlines.
+`*bufio.Reader`. In handler mode net/http owns sockets and deadlines; in
+independent reader mode the caller's loop does.
 
 ## 2. Boundaries: what simdhttp touches and never touches
 
@@ -97,8 +102,8 @@ must not appear in the disassembly of the hot loops unless enabled.
   the router routes them normally and the handler may accept the
   upgrade. `http1` framing treats `Upgrade` as ordinary; the
   `Connection: upgrade` hop-by-hop rule is recorded, not enforced, in
-  compatible mode; strict mode requires the adapter to handle it
-  explicitly.
+  compatible mode; strict mode requires the caller's server loop to
+  handle it explicitly.
 - HTTP/2 and HTTP/3 never reach `http1` text parsing; the router's
   method/path matching is protocol-agnostic.
 - WebSocket handshakes are routed as GET upgrades; the router must not
