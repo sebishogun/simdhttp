@@ -1,14 +1,65 @@
 # simdhttp
 
-A request-head parser for HTTP/1.1 built on [simd.go](https://github.com/sebishogun/simd):
-classify the bytes a vector register at a time, then walk the boundaries
-instead of the bytes — the two-stage shape simdjson proved on JSON,
-applied to a format whose structure is even simpler.
+An HTTP/1.1 request-head parser, body reader and router built on
+[simd.go](https://github.com/sebishogun/simd): classify the bytes a vector
+register at a time, then walk the boundaries instead of the bytes — the
+two-stage shape simdjson proved on JSON, applied to a format whose structure
+is even simpler. The router is a plain `http.Handler`, so it slots under
+`net/http` and keeps the ecosystem that comes with it.
 
-**What ships today:** only the borrowed-buffer request-head parser described
-below. There is no router, no body framing, no middleware, and no server.
-The approved production design ([architecture](docs/architecture.md),
-[roadmap](docs/roadmap.md)) is planned, not built.
+**What ships today:**
+
+| surface | package | state |
+|---|---|---|
+| request-head parser, borrowed buffers | `simdhttp` | shipped |
+| strict/compatible head parser with profiles | `simdhttp/http1` | shipped |
+| body framing decision table | `simdhttp/http1` | shipped |
+| fixed-length and chunked body reader with trailers, limits, drain | `simdhttp/http1` | shipped |
+| router: immutable build, segment trie, host patterns, 405/HEAD/OPTIONS | `simdhttp` | shipped |
+| error adapter, simdjson JSON, query/form helpers, middleware | `simdhttp` | shipped |
+| a server loop | — | not built; the router runs under `net/http` |
+
+The router is checked against `net/http.ServeMux` by a differential over
+generated pattern sets: same route, same bound values, same status, the
+`Allow` string byte for byte, and the redirect `Location`. Four divergences
+it found are recorded in [docs/wrong.md](docs/wrong.md) entries 9-12.
+
+## The router
+
+```go
+r := simdhttp.New()
+r.HandleFunc("GET", "/users/{id}", func(w http.ResponseWriter, req *http.Request) {
+	fmt.Fprint(w, req.PathValue("id"))
+})
+r.HandleFunc("GET", "/static/", serveFiles) // a trailing slash is a subtree
+if err := r.Build(); err != nil {           // conflicts are errors, never panics
+	log.Fatal(err)
+}
+http.ListenAndServe(":8080", r)
+```
+
+Registration mutates and never panics; `Build` compiles the trie, assigns
+dense method IDs, folds the middleware chain in, and freezes the router.
+After that the table is read-only, so any number of goroutines serve from it
+with no lock and no atomic — and a conflict is a build error rather than a
+request-time surprise. `MustBuild` is the one panic path, for tests and
+top-level setup.
+
+Patterns are ServeMux's: `{name}` matches one non-empty segment, `{$}` marks
+the end of a path, a trailing slash matches the subtree, and `*` is the named
+form of the same thing. Handlers stay `http.Handler`, requests stay
+`*http.Request`, and parameters go through the standard
+`SetPathValue`/`PathValue` — no context key, no wrapper type.
+
+| | simdhttp | net/http.ServeMux | |
+|---|---:|---:|---|
+| 4-segment route, 2 params, 100k routes | **96.9 ns, 0 allocs** | 169.4 ns, 2 allocs | 1.75× |
+| static route, 1k routes | **86.5 ns, 0 allocs** | 119.8 ns, 0 allocs | 1.39× |
+| `Query` accessor | **70.2 ns, 0 allocs** | 306.8 ns, 7 allocs | 4.4× |
+
+Measured on amd64 at `34bfc83`; the allocation counts are exact and the
+latencies were taken on a machine that was not quiet. `make bench-baseline`
+on a quiet machine is the reproduction.
 
 ## The parser
 
@@ -75,11 +126,15 @@ Phase 0 gaps:
 | Duplicate `Content-Length` | accepted | **rejected** in both profiles — stricter than Go, which dedupes identical values (D6) |
 | `Transfer-Encoding` | accepted unvalidated | duplicate **rejected** (parity), and the value must be exactly `chunked` — empty, `gzip`, `identity` and lists are rejected, as net/http rejects them. `ValidTransferEncoding` is the single implementation the framing table will share |
 | Limits | none | head size, request line, header count and value length per profile, each with its own typed error, never `ErrIncomplete` |
-| Body / chunked / trailers | not parsed | Phase 1 |
+| Body / chunked / trailers | not parsed | **shipped** — `FramingOf` decides, `NewBodyReader` serves fixed-length and chunked bodies with trailers, per-profile limits, a bounded drain and a pipelining contract |
 
 `CL` + `TE` together still parses at head level: that verdict belongs to
-the framing decision table (Phase 1, deviation D7), and the head exposes
-`ContentLengthLines` / `TransferEncodingLines` for it.
+the framing decision table (deviation D7), which reads the head's
+`ContentLengthLines` / `TransferEncodingLines` and rejects the pair. One
+function decides body framing, because two implementations of that policy is
+exactly what a smuggled request needs — one component frames the body one
+way, the next frames it another, and the bytes between the two readings are
+a request nobody inspected.
 
 The differential fuzz asserts the one-direction contract — never accept
 what net/http rejects. Two committed corpus seeds pin what it found:
@@ -131,33 +186,46 @@ returns a sub-slice. The fix reversed the typical shape from 1.22× to 1.05×
 Pure Go, no cgo in the dependency path: simd ships its kernels as committed
 assembly, so this is an ordinary `go get`.
 
+## Gates
+
+```
+make check     # gofmt, vet, tests, race, scalar tier, purego, hot loops, 5 architectures
+make verify    # check, plus fuzz smokes and bench-check
+```
+
+`hot-loops-check` fails if any hot loop disassembles with an indirect call;
+ten functions across both packages are covered. `Router.ServeHTTP` is
+excluded on purpose — its indirect calls are `w.Header`, `w.WriteHeader` and
+the handler handoff, which are calls through `http.ResponseWriter` and
+`http.Handler` and are the API this package exists to fit. `bench-check`
+compares against a committed baseline with no pipe carrying the verdict;
+the previous target could not fail, which is
+[docs/wrong.md](docs/wrong.md) entry 8.
+
 ## Roadmap
 
-The approved production target — a net/http-native low-allocation router,
-streaming body framing, helpers, and middleware, with safety work staged
-first — is specified in [docs/roadmap.md](docs/roadmap.md). Until the
-roadmap's Phase 0 lands, treat the parser as internally consistent but not
-yet hardened.
+Remaining: an independent server loop, and the `http1` reader as a complete
+alternative to `net/http`'s. Staged in [docs/roadmap.md](docs/roadmap.md).
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — shipped surface, gaps
   G1–G8, behavior policy D1–D10, production target.
-- [docs/roadmap.md](docs/roadmap.md) — the staged, safety-first plan;
-  nothing in it is built yet.
-- [docs/lld/router.md](docs/lld/router.md) — router LLD (target).
+- [docs/roadmap.md](docs/roadmap.md) — the staged plan; Phases 0-4 are
+  executed, the server loop is not.
+- [docs/lld/router.md](docs/lld/router.md) — router LLD (shipped).
 - [docs/lld/http1-head-parser.md](docs/lld/http1-head-parser.md) — head
   parser LLD (today and target).
 - [docs/lld/http1-body-framing.md](docs/lld/http1-body-framing.md) —
-  body framing LLD (target).
+  body framing LLD (shipped).
 - [docs/lld/net-http-integration.md](docs/lld/net-http-integration.md) —
-  net/http integration LLD (target).
+  net/http integration LLD (shipped, less the server loop).
 - [docs/verification.md](docs/verification.md) — every gate.
 - [docs/wrong.md](docs/wrong.md) — the record of findings that cost
   measurement.
 - [docs/plans/2026-08-13-simdhttp-production-design.md](docs/plans/2026-08-13-simdhttp-production-design.md) —
   the approved production design.
 - [docs/plans/2026-08-13-simdhttp-production.md](docs/plans/2026-08-13-simdhttp-production.md) —
-  the future TDD implementation plan (not to be executed until tasked).
+  the TDD implementation plan; Phases 0-4 executed.
 - [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) — the working rules
   for agents; AGENTS.md is canonical.

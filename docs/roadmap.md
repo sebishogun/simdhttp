@@ -1,11 +1,15 @@
 # Roadmap
 
 Staged, safety first. Each phase ends in a commit with its gates green
-(`docs/verification.md`). Nothing below is built yet; phases and gates
-are the approved plan. The current tree is the head parser only
-(`docs/architecture.md` §1–2).
+(`docs/verification.md`).
 
-## Phase 0 — Harden the shipped parser (safety first)
+**Phases 0-4 are executed.** What each one exited with is recorded under
+its heading; the measured numbers below were taken at `34bfc83` on
+amd64. What remains is a server loop of this repository's own -- until
+then the router runs under `net/http`, which is the arrangement the
+end-to-end suite exercises.
+
+## Phase 0 — Harden the shipped parser (safety first) — **done**
 
 Close G1–G6 on the current `Parse` in the `simdhttp` package or its
 immediate successor:
@@ -30,7 +34,7 @@ corpora that net/http rejects, plus the strict-profile superset; no
 regression past the 8.3% floor on the typical shape (measured, not
 inferred); `docs/wrong.md` updated.
 
-## Phase 1 — `simdhttp/http1`: framing and body reader
+## Phase 1 — `simdhttp/http1`: framing and body reader — **done**
 
 - Package skeleton, profiles, and the framing decision table
   (body-framing LLD §1, §4).
@@ -43,7 +47,7 @@ inferred); `docs/wrong.md` updated.
 **Exit:** framing verdicts match the table against the corpora under
 `-race`; no panic/hang fuzz over the reader passes its time budget.
 
-## Phase 2 — Root router
+## Phase 2 — Root router — **done**
 
 - Route syntax, precedence, conflicts, immutable `Build` (router LLD
   §2–3).
@@ -59,7 +63,7 @@ inferred); `docs/wrong.md` updated.
 the 8.3% floor with zero allocation on the matched path; disassembly
 shows no indirect call in the walk.
 
-## Phase 3 — Helpers, middleware, error adapter
+## Phase 3 — Helpers, middleware, error adapter — **done**
 
 - `Wrap` error adapter with `ErrorMapper` (integration LLD §3).
 - simdjson JSON helpers, query/form accessors, `Param` (§4).
@@ -68,7 +72,7 @@ shows no indirect call in the walk.
 **Exit:** `httptest` end-to-end suite green, including hijack/Flusher
 assertions and h2/TLS smoke (integration LLD §7).
 
-## Phase 4 — Pipelining polish, seams, gates rework
+## Phase 4 — Pipelining polish, seams, gates rework — **done**
 
 - Drain and pipelining edge cases (body-framing LLD §5–6) under the
   smuggling corpora.
@@ -96,3 +100,36 @@ Phases are ordered by dependency, and Phase 0 is a hard prerequisite:
 no router or server work starts while the parser accepts inputs the
 origin would reject differently. A phase may be reordered only with a
 design note in `docs/architecture.md` explaining the new dependency.
+
+## Executed: what each phase actually exited with
+
+Recorded here rather than folded into the phase text above, so the plan
+still reads as the plan and this reads as the result.
+
+| phase | exit | evidence |
+|---|---|---|
+| 0 | G1-G6 closed; `http1` parser with compatible/strict profiles, limits, typed errors | two fuzz-found corpus seeds committed red-then-green; 9.7M executions with no finding |
+| 1 | framing table, fixed-length and chunked reader, trailers, limits, bounded drain | every row of the framing table asserted in both profiles; every prefix of a chunked stream asserted to fail; 6.1M and 3.9M fuzz executions |
+| 2 | router: immutable build, segment trie, host patterns, 405/HEAD/OPTIONS, trailing slash | differential against `net/http.ServeMux` over 300 generated pattern sets plus 6 fixed; 5 sets skipped and logged. Match 96.9 ns / 0 allocs against ServeMux's 169.4 ns / 2 |
+| 3 | error adapter, simdjson JSON, query/form helpers, middleware | 11-test end-to-end suite on a real server: TLS, HTTP/2, hijack, flush, 50-request keep-alive. `Query` 70.2 ns / 0 allocs against `net/url`'s 306.8 ns / 7 |
+| 4 | hot-loop disassembly gate, pipefail-safe `bench-check`, cross-arch and tier lanes | 10 hot loops with no indirect call; `bench-check` proved red by halving a baseline row; arm64, s390x, ppc64le, riscv64, loong64 build and vet |
+
+Four divergences from `net/http.ServeMux` that the Phase 2 differential
+found, and one dependency fact the Phase 3 test found, are recorded in
+`docs/wrong.md` entries 9-13. Each was probed against the reference
+before being fixed rather than reasoned about.
+
+## Remaining
+
+- **A server loop.** `http1` can frame a connection end to end -- head,
+  body, drain, next head -- but nothing in this repository accepts a
+  socket. The router is an `http.Handler` and runs under `net/http`
+  today, which is deliberate: it is the arrangement that keeps the
+  ecosystem, and a server of our own has to earn its way past that.
+- **A quiet-machine baseline.** `testdata/bench.txt` records the load
+  average it was captured at (3.76), which is too high for the
+  wall-clock floor to mean much. `make bench-baseline` on a quiet
+  machine replaces it.
+- **The 8.3% floor is inherited, not measured here.** It comes from the
+  simd repository's record; this repository has never measured its own
+  layout noise (`docs/wrong.md` entry 8).

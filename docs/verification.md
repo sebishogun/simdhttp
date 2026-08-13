@@ -1,18 +1,26 @@
 # Verification
 
-The gates every simdhttp change and every claim must pass. Current
-baseline verified 2026-08-13 on this machine (Go 1.26.5 toolchain,
-amd64): `go test`, `go vet`, `gofmt`, `go test -race` green; a 15 s
-differential fuzz smoke passed ~3.9 M execs earlier that day. **The
-fuzz smoke is red as of 2026-08-13 evening on this machine**: it
-reached the duplicate-Host case (`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n`,
-wrong.md §3) and fails its one-direction assertion on the documented
-gap G2 — expected and recorded, not a flake. The red is local: it
-comes from the campaign cache and a run-written corpus file, and no
-seed is committed, so a fresh clone's fuzz stays green until
-rediscovery; the production plan's Task 3 pins the corpus file
-`testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878` with the
-fix, after which fresh clones replay it at baseline. The gates below
+The gates every simdhttp change and every claim must pass.
+
+**Current state, 2026-08-13, amd64, toolchain `go1.26.2`:** `make check`
+is green — gofmt, vet, `go test ./...`, `go test -race ./...`, the scalar
+tier, the purego build, the hot-loop disassembly gate, and build+vet on
+arm64, s390x, ppc64le, riscv64 and loong64.
+
+The duplicate-Host red recorded in an earlier revision of this document
+is closed: G2 was fixed in Phase 0 and its repro is committed as
+`testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878`, so a fresh
+clone replays it at baseline rather than rediscovering it. A second seed,
+`b073e10c2a865463`, pins an empty `Transfer-Encoding` found while
+hardening.
+
+`make verify` adds the fuzz smokes and `bench-check`. `bench-check`
+compares wall-clock against `testdata/bench.txt`, so it belongs on a
+quiet machine; the committed baseline records the load average it was
+captured at (3.76), which is too high, and `make bench-baseline`
+replaces it.
+
+The gates below
 cover current code and the roadmap's phases; phase-specific gates are
 marked. All oracle verdicts in this document refer to the Go 1.26.5
 toolchain actually run; go.mod's `go 1.26.2` directive is a module

@@ -233,6 +233,12 @@ repo's short history; the flaw is the exposure.
 
 **Source.** `Makefile` `bench-check` target.
 
+**Closed 2026-08-13** by the Phase 4 gates rework (`34bfc83`):
+`scripts/bench-check.sh` compares against a committed
+`testdata/bench.txt` with no pipe carrying the verdict, and was proved
+red by halving one baseline row -- exit 2, bare and piped. The entry
+below stands as the record of the flaw.
+
 **Consequence.** `bench-check` is advisory until the Phase 4 gates
 rework (it also references `testdata/bench.txt`, which no commit has
 ever added); all benches are judged by bare, interleaved, minimum-of-six
@@ -243,3 +249,125 @@ measurement policy, inherited from the measured record in the simd
 repository's `CLAUDE.md` — it has not been re-measured in this
 repository (future work), so this repo quotes it as inherited policy,
 not as a locally measured constant.
+
+## 9. The router's trailing slash was designed as an exact path
+
+**Believed.** `docs/lld/router.md` §5 stated that `/users` and
+`/users/` are distinct routes and that each "matches its own form
+exactly (no merging)". The first implementation did that: `/users/`
+parsed to a final empty literal segment and matched only `/users/`.
+
+**Actually.** `net/http.ServeMux` treats a pattern ending in a slash as
+a **subtree**. Probed: with only `GET /users/` registered, `/users/x`
+and `/users/x/y/z` both match it, and `GET /` matches
+`/anything/at/all`. The exact-match reading would 404 the most common
+ServeMux idiom — `mux.Handle("/static/", fileServer)` — for every path
+below the prefix.
+
+**How it surfaced.** The Task 16 differential, on its first run, over
+generated pattern sets. Five hand-written fixed sets had not reached
+it; the generated sets did, immediately and in bulk.
+
+**Source.** `net/http` `routing_tree.go`; probe in the 2026-08-13
+session against the toolchain oracle.
+
+**Consequence.** The subtree reading is now the implementation and the
+LLD says so. `{$}` was added as the end-of-path marker, which is the
+exact-match form the subtree rule displaces, and `*` remains the named
+form of the same thing. The document was wrong before the code was; a
+differential against the reference is what distinguishes those.
+
+## 10. Choosing the most specific pattern, then checking its method
+
+**Believed.** Route matching is about the path; once the most specific
+pattern is found, its method table answers whether the request is
+served or gets a 405.
+
+**Actually.** ServeMux keys its tree by **method first**, so the most
+specific pattern is chosen among the patterns registered for *that
+method*. The two readings differ whenever a more specific pattern
+exists for another method: with `GET /x/{a}` and `POST /` registered, a
+`POST /x/y` matches `/` under ServeMux and 405s under the
+path-first reading — a request the reference serves, refused.
+
+**How it surfaced.** The generated differential, as a cluster of
+`-> 405, ServeMux 200` rows.
+
+**Source.** `router.go` `matchSegments`, which now carries the request's
+method ID and accepts a terminal node only if it serves that method.
+
+**Consequence.** The walk takes a method filter; the 405 and `Allow`
+paths re-walk without it. Two walks on a 405 is a cold-path cost for a
+hot-path correctness property.
+
+## 11. `Allow` named the winning node's methods
+
+**Believed.** On a 405, the methods to advertise are the ones
+registered at the node the path matched, plus the trailing-slash
+variant.
+
+**Actually.** ServeMux enumerates every pattern that *could* match the
+path, across all branches — parameter and subtree patterns included —
+not the methods of the one node that won. With `MKCOL /x` and
+`PATCH /` registered, `POST /x` must answer `Allow: MKCOL, PATCH`; the
+node-local reading answered `Allow: MKCOL`.
+
+**How it surfaced.** The generated differential, as byte-level `Allow`
+mismatches.
+
+**Source.** `router.go` `collectMethods`, a second walk that visits
+every matching branch.
+
+**Consequence.** `Allow` is built by a full enumeration on the cold
+path. The header is a promise about what the server would accept, and a
+short one sends a client away from a method that would have worked.
+
+## 12. One redirect, two escapings
+
+**Believed.** A redirect's `Location` is the target path; how it was
+built does not matter.
+
+**Actually.** ServeMux builds the two redirects from different strings.
+The trailing-slash redirect uses `cleanPath(u.Path)` — the **decoded**
+path — while the unclean-path redirect uses the cleaned **escaped**
+path, and both then pass through `url.URL.String()`, which escapes
+again. So the same target arrives as `/a/%7Bp1%7D/` from one and
+`/a/%257Bp1%257D/` from the other.
+
+**How it surfaced.** The generated differential compared `Location`
+byte for byte and produced both spellings against a request path
+containing an unreplaced `{p1}` placeholder — an artifact of the
+generator that happened to expose a real difference.
+
+**Source.** `net/http` `server.go` `findHandler`; `router.go`
+`redirect`.
+
+**Consequence.** Both paths are reproduced exactly. A `Location` a
+client follows differently is a different request, so byte agreement
+here is worth more than a tidier construction.
+
+## 13. simdjson links `encoding/json.Marshal`
+
+**Believed.** The helper set reaches JSON only through simdjson, and
+`encoding/json` is absent from the built binary.
+
+**Actually.** `encoding/json.Marshal` is present in the linked binary
+of a program that uses `simdhttp.JSON`. Two separate reasons: simdjson
+imports `encoding/json` for **type identity** — `RawMessage`,
+`Marshaler`, `Unmarshaler` and the error types are aliases, and must be
+for a caller's structs to pass between the two packages — and
+`marshal.go` retains a `json.Marshal(iv)` **fallback** for a value
+whose `json.Marshaler`/`TextMarshaler` assertion fails at run time.
+
+**How it surfaced.** The Task 18 dependency test, written to assert
+`encoding/json` was absent from the graph, failed. `go tool nm` on a
+real binary then showed `encoding/json.Marshal` linked, not just the
+package present.
+
+**Source.** `simdjson/compat.go`; `simdjson/marshal.go:481`.
+
+**Consequence.** The test now asserts the precise true thing: simdjson
+is the only package in the graph importing `encoding/json`, and no
+package of this module does. The aliases are not removable without
+breaking simdjson's drop-in promise. The `json.Marshal` fallback is
+simdjson's to remove and is recorded there.

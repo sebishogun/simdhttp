@@ -3,10 +3,24 @@
 ## 1. What exists today
 
 The module `github.com/sebishogun/simdhttp` (go.mod declares `go 1.26.2`;
-the oracle for every behavior claim in this document is the Go 1.26.5
-toolchain actually run; depends only on `github.com/sebishogun/simd`
-v1.20.0, no cgo) ships exactly one thing: a borrowed-buffer HTTP/1
-request-head parser.
+the oracle for every behavior claim in this document is the toolchain
+actually run, `go1.26.2` as of this revision; depends on
+`github.com/sebishogun/simd` v1.20.0 and `github.com/sebishogun/simdjson`
+v0.6.0, no cgo) ships:
+
+| surface | package |
+|---|---|
+| borrowed-buffer request-head parser (below) | `simdhttp` |
+| hardened head parser with compatible/strict profiles | `simdhttp/http1` |
+| body framing decision table, `FramingOf` | `simdhttp/http1` |
+| fixed-length and chunked body reader, trailers, limits, drain | `simdhttp/http1` |
+| router: immutable build, segment trie, host patterns | `simdhttp` |
+| error adapter, JSON and query/form helpers, middleware | `simdhttp` |
+
+There is no server loop: the router is an `http.Handler` and runs under
+`net/http`. The original parser section that follows is unchanged and
+describes the root `Parse`, which stays for compatibility; new work uses
+`http1.Parse`.
 
 **Exported surface** (`parser.go`):
 
