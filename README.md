@@ -35,12 +35,14 @@ block through the terminating blank line — from the start of `buf`.
   either error, `consumed` is 0 and the request must not be used.
 - A `Request` is not safe for concurrent use: `Parse` reuses its scratch.
 
-The version must be exactly `HTTP/1.0` or `HTTP/1.1`; methods and header
-names must be RFC 9110 tokens; header values may not contain control bytes
-other than HTAB; and line endings must be CRLF. Request-target semantics are
-the caller's job (net/url), not this package's — today the parser does not
-even check the target for control bytes or invalid percent-escapes (see the
-gap table below).
+The version must be exactly `HTTP/1.0` or `HTTP/1.1` — a deliberate
+restriction (deviation D10: Go's reader accepts any single-digit
+`HTTP/X.Y`, and the server also accepts the `PRI * HTTP/2.0` preface).
+Methods and header names must be RFC 9110 tokens; header values may not
+contain control bytes other than HTAB; and line endings must be CRLF.
+Request-target semantics are the caller's job (net/url), not this
+package's — today the parser does not even check the target for control
+bytes or invalid percent-escapes (see the gap table below).
 
 ## Contract with net/http
 
@@ -67,7 +69,7 @@ addressing them.
 | Duplicate `Host` | any second `Host` line is accepted, even an identical one | rejects ("too many Host headers") |
 | Missing / malformed `Host` | an HTTP/1.1 head with no `Host`, an empty `Host:`, or a malformed host is accepted | server rejects missing and malformed Host; a present-but-empty `Host:` is accepted |
 | Request-target controls and escapes | NUL, DEL and other control bytes, and invalid percent-escapes (`%zz`, `%2`), are accepted in the target | rejects (net/url control-character and escape checks) |
-| `Content-Length` framing | `Content-Length` + `Transfer-Encoding` together, and any duplicate `Content-Length`, are accepted | `ReadRequest` deletes `Content-Length` when `Transfer-Encoding` is present and frames chunked; rejects *differing* duplicate `Content-Length`, dedupes identical ones; the server rejects the CL+TE combination |
+| `Content-Length` framing | `Content-Length` + `Transfer-Encoding` together, and any duplicate `Content-Length`, are accepted | `ReadRequest` and the server both accept CL+TE by deleting `Content-Length` and framing chunked; rejects *differing* duplicate `Content-Length`, dedupes identical ones |
 | Body / chunked / trailers | not parsed at all — no framing, no `BodyReader` | full framing |
 | Limits | none: unbounded head size, header count, value length | server head bounded by `MaxHeaderBytes` (default 1 MiB) |
 

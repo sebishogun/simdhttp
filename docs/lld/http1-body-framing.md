@@ -79,12 +79,13 @@ These verdicts are the contract. The oracle column shows verified Go
 1.26.5 behavior for `ReadRequest` and, where they differ, the server.
 `reject` always means a framing error from `NewBodyReader`/first
 `Read`, never a silent choice. Rows marked **deviation** are
-deliberately stricter than `ReadRequest` and are enumerated in
-`docs/architecture.md` §2.1 (D6, D7); every other row is parity.
+deliberately stricter than Go — both reader and server unless noted —
+and are enumerated in `docs/architecture.md` §2.1 (D6, D7); every other
+row is parity.
 
 | input | compatible | strict | Go 1.26.5 (verified) |
 |---|---|---|---|
-| `Content-Length` + `Transfer-Encoding` (**D7**) | reject | reject | ReadRequest deletes CL and frames chunked; the *server* rejects the combination |
+| `Content-Length` + `Transfer-Encoding` (**D7**) | reject | reject | ReadRequest and the server both delete CL and frame chunked (probed: server 200, chunked body) |
 | two `Content-Length` lines, equal values (**D6**) | reject | reject | ReadRequest dedupes, accepts |
 | two `Content-Length` lines, differing | reject | reject | reject ("message cannot contain multiple Content-Length headers") |
 | empty `Content-Length:` | reject | reject | reject ("invalid empty Content-Length") |

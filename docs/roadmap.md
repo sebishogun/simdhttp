@@ -48,6 +48,10 @@ inferred); `docs/wrong.md` updated.
 - Route syntax, precedence, conflicts, immutable `Build` (router LLD
   §2–3).
 - 405/Allow, HEAD-from-GET, `OPTIONS *`, trailing-slash policy (§3, §5).
+  `OPTIONS *` reaches the router only with
+  `DisableGeneralOptionsHandler: true` (or in independent-reader mode):
+  the standard server intercepts it; the router's `Allow` behavior is
+  asserted by direct `ServeHTTP` tests.
 - Params via `SetPathValue`/`PathValue`; host matching (§4, §6).
 - Differential vs `net/http.ServeMux` (verification §5).
 

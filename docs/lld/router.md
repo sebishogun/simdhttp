@@ -84,11 +84,16 @@ with equal precedence) instead of silently choosing one, matching
   an explicit `HEAD` pattern wins.
 - `OPTIONS *` (asterisk-form, RFC 9110 §7.1) is answered by the router
   itself with `Allow` when no `OPTIONS` pattern matches; an explicit
-  `OPTIONS` pattern wins. This is **explicit simdhttp router behavior,
-  not ServeMux parity**: Go's server does not special-case
-  asterisk-form OPTIONS (probed on Go 1.26.5: ServeMux answers 400),
-  so the router differential excludes this case and asserts simdhttp's
-  behavior directly.
+  `OPTIONS` pattern wins. The router only ever sees this request when
+  the surrounding server passes it through: Go 1.26.5's standard
+  `http.Server` intercepts `OPTIONS *` before the handler
+  (`serverHandler` swaps in `globalOptionsHandler`; probed: 200, no
+  `Allow`) unless the application sets
+  `Server.DisableGeneralOptionsHandler = true`. So simdhttp's
+  with-`Allow` behavior is available in independent-reader/future-
+  server mode, or in handler mode only with that flag set. Asserted
+  directly in router tests (ServeHTTP called directly), not against
+  ServeMux — which alone answers `OPTIONS *` with 400 (probed).
 - Method match is exact, case-sensitive (`get` does not match `GET`);
   the parser already rejects non-token methods.
 
@@ -110,10 +115,10 @@ only.
     router answers with a **307 Temporary Redirect** to `/users/` in
     compatible mode; in strict mode it answers `404`. The redirect
     mode is a `Build` option (`RedirectTrailingSlash bool`), default
-    compatible = on. The 307 is a documented difference from
-    `ServeMux`, which redirects with 301: the differential asserts the
-    location (append the slash) and asserts the status as the
-    documented difference, not as agreement.
+    compatible = on. This is **parity with ServeMux**, which also
+    redirects trailing-slash mismatches with 307 (probed on Go 1.26.5:
+    `GET /users` → 307, `Location: /users/`); the differential asserts
+    status and location agreement.
 
 ## 6. The match loop (hot path)
 
@@ -152,11 +157,12 @@ hashed once — no `map[string]` in the per-request path, no closures.
 ## 8. Tests
 
 - Route differential vs `net/http.ServeMux`: generated pattern sets and
-  request corpora must agree on match, params, 405/Allow, and
-  `PathValue` contents (`docs/verification.md` §5). Two cases are
-  asserted as documented differences, not agreement: trailing-slash
-  redirect status (simdhttp 307, ServeMux 301; location must agree) and
-  `OPTIONS *` (simdhttp's explicit behavior; ServeMux 400s).
+  request corpora must agree on match, params, 405/Allow, trailing-slash
+  redirect (status **and** location — both are 307), and `PathValue`
+  contents (`docs/verification.md` §5). `OPTIONS *` is excluded: it is
+  simdhttp-specific (ServeMux alone 400s; the standard server
+  intercepts it unless `DisableGeneralOptionsHandler` is set) and is
+  asserted directly in router tests.
 - Conflict and precedence unit tests (conflicts are `Build` errors;
   `MustBuild` panics on them by design); param decoding (`%20`, `%2F`,
   double-encoded) pinned against ServeMux.

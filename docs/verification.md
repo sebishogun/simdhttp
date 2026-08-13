@@ -23,10 +23,12 @@ oracle date.
   bare LF, space-in-name, comma and bracket Hosts.
 - Assertion direction: simdhttp must never accept what net/http rejects
   (framing; net/url target semantics excepted per `fuzz_test.go`), and
-  accepted fields must match byte-for-byte. The enumerated deviations
-  (architecture §2.1 D1–D9) are asserted one-directionally — simdhttp
-  rejects, Go's verdict recorded from the probed oracle — never as
-  parity. The strict profile is a documented superset of rejections.
+  accepted fields must match byte-for-byte. The behavior-policy rows
+  (architecture §2.1, D1–D10) are asserted one-directionally —
+  simdhttp rejects, Go's verdict recorded from the probed oracle —
+  with parity closures (D4, D8) asserted as the parity they are, never
+  as deviations. The strict profile is a documented superset of
+  rejections.
 
 ## 2. Gate hygiene (house rules)
 
@@ -61,6 +63,9 @@ Fixed corpora, committed with each phase's tests (LLD
   bracket rows are deviation D9 (Go accepts both);
 - target: NUL/DEL/other controls, invalid escapes (`%zz`, `%2`),
   overlong escapes, `%2F`, absolute-form, asterisk-form;
+- version lines: `HTTP/1.2`, `HTTP/2.0`, the `PRI * HTTP/2.0` preface,
+  `HTTP/9.9` — Go accepts these (probed); simdhttp rejects (deviation
+  D10);
 - oversized: head past every limit, chunk-size line past its limit,
   trailer count past its limit;
 - truncated at every byte position of a chunked body and its trailers.
@@ -90,12 +95,14 @@ the probed oracle so the corpus doubles as the deviation documentation.
 Generated pattern sets (params, wildcards, hosts, trailing slashes,
 method mixes) and generated request corpora; for each request, compare
 simdhttp vs `net/http.ServeMux` on: matched route, `PathValue` contents,
-405 vs 404, `Allow` header. Agreement is required in compatible mode;
-strict mode's documented supersets are listed explicitly per case, not
-discovered at test time. Two cases are excluded from agreement and
-asserted as documented differences: trailing-slash redirect status
-(simdhttp 307 vs ServeMux 301; the location must agree) and `OPTIONS *`
-(simdhttp's explicit behavior; ServeMux 400s). `httptest` is the
+405 vs 404, `Allow` header, trailing-slash redirect (status and
+location — parity: both redirect with 307, probed on Go 1.26.5).
+Agreement is required in compatible mode; strict mode's documented
+supersets are listed explicitly per case, not discovered at test time.
+`OPTIONS *` is excluded from the differential — ServeMux alone answers
+400, the standard server intercepts it (`globalOptionsHandler`, 200, no
+`Allow`) unless `DisableGeneralOptionsHandler` is set, and simdhttp's
+`Allow` behavior is asserted directly in router tests. `httptest` is the
 harness; no sockets.
 
 ## 6. Disassembly

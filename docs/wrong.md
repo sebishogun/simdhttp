@@ -122,18 +122,21 @@ layer that catches this).
 responsibility; whatever a future body layer needs, it can re-derive.
 
 **Actually.** `Content-Length` and `Transfer-Encoding` are smuggling
-surface from the moment a server consumes the head. Go 1.26.5's
-`ReadRequest` accepts both a CL+TE combination (it deletes
-`Content-Length` and frames chunked — `fixLength` in `transfer.go`)
-and two *identical* `Content-Length` values (deduped); it rejects
-*differing* duplicates ("message cannot contain multiple Content-Length
-headers"). simdhttp returns all of these opaquely: both lines of a
-duplicate CL, and CL+TE together, pass.
+surface from the moment a server consumes the head. Go 1.26.5 accepts
+a CL+TE combination at every layer: `ReadRequest` and the server both
+delete `Content-Length` and frame chunked (`fixLength` in
+`transfer.go`; probed: server 200 with the chunked body). Two
+*identical* `Content-Length` values are deduped and accepted;
+*differing* duplicates are rejected ("message cannot contain multiple
+Content-Length headers"). simdhttp returns all of these opaquely: both
+lines of a duplicate CL, and CL+TE together, pass.
 
 **How it surfaced.** Differential run, 2026-08-13: two differing CLs —
 net/http errors, simdhttp accepts; two identical CLs — net/http
 dedupes and accepts, simdhttp accepts both lines; CL+TE — both accept
-at read level (Go's server rejects the combination later).
+at read level, and a live server probe (2026-08-13 re-review) showed
+the Go server accepts it too: the handler ran with the chunked body
+and answered 200.
 
 **Source.** Live differential; Go 1.26.5 `net/http` `transfer.go`
 (`fixLength`, `parseTransferEncoding`) and `request.go`.

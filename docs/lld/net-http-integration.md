@@ -19,7 +19,12 @@ Two modes of use:
    body framing with its own `MaxHeaderBytes` etc. The router, helpers,
    and middleware operate exclusively on net/http's parsed
    `*http.Request`. This mode is the compatibility floor: everything
-   works today, nothing about the request lifecycle changes.
+   works today, nothing about the request lifecycle changes. One
+   boundary: the standard server intercepts `OPTIONS *` before the
+   handler (`globalOptionsHandler` — 200, no `Allow`) unless the
+   application sets `Server.DisableGeneralOptionsHandler = true`;
+   simdhttp's `Allow`-bearing `OPTIONS *` response therefore requires
+   that flag in handler mode (or independent-reader mode).
 2. **Independent reader mode (roadmap Phase 1+).** `simdhttp/http1.Parse`
    + `BodyReader` consume a `*bufio.Reader` over a connection the
    *caller* owns — there is no way to hand a standard `http.Server`

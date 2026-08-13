@@ -360,8 +360,9 @@ git commit -m "http1: reject duplicate Content-Length, expose framing fields"
 ```go
 func TestLimits(t *testing.T) {
 	var req Request
-	// 60 headers > the strict 50; head stays small so the count check fires.
-	_, err := Parse(&req, []byte(strings.Repeat("GET / HTTP/1.1\r\nX: v\r\n", 60)+"\r\n"), Strict)
+	// One request line, then 60 valid header lines (> the strict 50):
+	// the count check must fire with the head still small.
+	_, err := Parse(&req, []byte("GET / HTTP/1.1\r\n"+strings.Repeat("X-H: v\r\n", 60)+"\r\n"), Strict)
 	if err != ErrTooManyHeaders {
 		t.Fatalf("header-count limit: %v", err)
 	}
@@ -372,9 +373,10 @@ func TestLimits(t *testing.T) {
 	if err != ErrValueTooLarge {
 		t.Fatalf("value limit: %v", err)
 	}
-	// ~500 KiB head, every value under the strict 64 KiB value limit:
-	// the entry check fires ErrHeadTooLarge before the count check.
-	_, err = Parse(&req, []byte(strings.Repeat("GET / HTTP/1.1\r\nX: "+strings.Repeat("v", 1<<13)+"\r\n", 60)+"\r\n"), Strict)
+	// One request line, then 60 valid 8 KiB headers (~500 KiB head, every
+	// value under the strict 64 KiB value limit): the entry check fires
+	// ErrHeadTooLarge before the count check.
+	_, err = Parse(&req, []byte("GET / HTTP/1.1\r\n"+strings.Repeat("X: "+strings.Repeat("v", 1<<13)+"\r\n", 60)+"\r\n"), Strict)
 	if err != ErrHeadTooLarge {
 		t.Fatalf("head limit: %v", err)
 	}
@@ -462,7 +464,7 @@ table (`docs/lld/http1-body-framing.md` §4), e.g.:
 func TestFramingCLPlusTE(t *testing.T) {
 	h := []byte("Content-Length: 5")
 	if v := Framing(h, [][]byte{[]byte("chunked")}, Compatible); v != ErrAmbiguousFraming {
-		t.Fatalf("CL+TE: %v", v) // deviation D7: Go's ReadRequest would delete CL and frame chunked
+		t.Fatalf("CL+TE: %v", v) // deviation D7: Go's ReadRequest and server both delete CL and frame chunked (probed: 200)
 	}
 }
 
@@ -690,11 +692,15 @@ git commit -m "router: immutable build and segment-trie matching"
 
 **Step 1: Write the failing tests** — 405 with `Allow` for
 method-mismatched paths; `HEAD` served by the `GET` handler unless an
-explicit `HEAD` exists; `OPTIONS *` answered with `Allow` (explicit
-simdhttp behavior — Go's ServeMux answers 400, probed on Go 1.26.5);
-trailing slash: `RedirectTrailingSlash` on → **307** to the slash form
-(simdhttp's documented difference from ServeMux's 301), off → 404;
-explicit `/users` + `/users/` both match their exact forms.
+explicit `HEAD` exists; `OPTIONS *` answered with `Allow` — the test
+calls `ServeHTTP` directly (or runs a server with
+`DisableGeneralOptionsHandler: true`), because a standard
+`http.Server` intercepts `OPTIONS *` before the handler
+(`globalOptionsHandler`: 200, no `Allow`; probed on Go 1.26.5), and
+ServeMux alone answers 400; trailing slash: `RedirectTrailingSlash` on
+→ **307** to the slash form — parity with ServeMux, which also
+redirects with 307 (probed), off → 404; explicit `/users` +
+`/users/` both match their exact forms.
 
 **Step 2: Run to verify they fail** — FAIL.
 
@@ -738,10 +744,11 @@ git commit -m "router: host-pattern matching"
 
 **Step 1: Write the differential harness** — generated pattern sets and
 request corpora (`docs/verification.md` §5): same route, same
-`PathValue`, same 405/404/Allow. Two cases asserted as documented
-differences, not agreement: trailing-slash redirect status (simdhttp
-307 vs ServeMux 301; location must agree) and `OPTIONS *` (simdhttp's
-explicit behavior; ServeMux 400s). And the match bench:
+`PathValue`, same 405/404/Allow, and trailing-slash redirect parity
+(status and location — both 307, probed). `OPTIONS *` is excluded from
+the differential (simdhttp-specific; ServeMux alone 400s, the standard
+server intercepts it unless `DisableGeneralOptionsHandler` is set) and
+asserted directly in Task 14's router tests. And the match bench:
 
 ```go
 func BenchmarkMatch4Segment(b *testing.B) {

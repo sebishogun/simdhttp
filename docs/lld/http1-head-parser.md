@@ -73,7 +73,7 @@ G1–G5 from `docs/architecture.md` §2, with the mechanism:
 | G2 duplicate Host | no Host bookkeeping at all | "too many Host headers", even for identical values |
 | G3 Host presence/format | no Host code at all | server: "missing required Host header" (HTTP/1.1), "malformed Host header"; present-but-empty `Host:` accepted |
 | G4 target controls and escapes | target is only split, never scanned | net/url: "invalid control character in URL", "invalid URL escape" (`%zz`, `%2`) |
-| G5 CL/TE framing | headers are opaque name/value pairs | `ReadRequest` dedupes identical `Content-Length`s and rejects differing ones; with `Transfer-Encoding` present it deletes `Content-Length` and frames chunked; the *server* rejects CL+TE |
+| G5 CL/TE framing | headers are opaque name/value pairs | `ReadRequest` dedupes identical `Content-Length`s and rejects differing ones; with `Transfer-Encoding` present — and on the server too — `Content-Length` is deleted and the request frames chunked (probed: server 200, chunked body) |
 
 G1 is unreachable by the differential fuzz (seeds are short; 15 s smoke
 does ~3.9 M execs without growing a ≥ 64-byte value). G2–G5 are reachable
@@ -173,18 +173,20 @@ expose `Content-Length` lines and `Transfer-Encoding` lines raw, and
 reject a *second* `Content-Length` line at parse time. That rejection is
 an enumerated deviation (D6): Go's `ReadRequest` dedupes identical
 `Content-Length` values and only rejects differing ones; simdhttp
-rejects every duplicate in both profiles. The CL+TE combination and TE
-shape are the body layer's framing-table verdict (D7, parity with Go's
-single-encoding rule).
+rejects every duplicate in both profiles. The CL+TE combination is the
+body layer's framing-table verdict (D7 — a deviation from both Go's
+reader and server); the TE-shape rule (exactly one field, exactly
+`chunked`) is parity with Go's single-encoding rule, not D7.
 
 ### 3.7 Profiles
 
 | rule | compatible-default | strict-security |
 |---|---|---|
 | name token / CRLF / no obs-fold | enforced (D1–D3) | enforced |
-| duplicate Host | rejected | rejected |
+| version exactly `HTTP/1.0`/`HTTP/1.1` | enforced (D10: deliberate; Go accepts any `HTTP/X.Y` and the h2 preface) | enforced |
+| duplicate Host | rejected (D4, parity closure) | rejected |
 | missing or empty Host (1.1) | `ErrMissingHost` (caller maps to 400; D5) | rejected |
-| target controls and invalid escapes | rejected (D8, parity with Go) | rejected |
+| target controls and invalid escapes | rejected (D8, parity closure) | rejected |
 | duplicate CL (any) | rejected (D6) | rejected |
 | CL+TE | rejected (D7) | rejected |
 | TE exactly `chunked` | enforced (parity with Go's single-encoding rule) | enforced |

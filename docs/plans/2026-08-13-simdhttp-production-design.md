@@ -53,8 +53,9 @@ the matched path. Limits are enforced during scans, not after.
 
 `Compatible` is application-compatible with net/http, not
 byte-for-byte-permissive: it matches Go's verdicts except where a
-deviation is enumerated in `docs/architecture.md` §2.1 (D1–D9 — e.g.
-D5–D7 deliberately reject ambiguous framing forms Go's reader accepts).
+behavior-policy row in `docs/architecture.md` §2.1 (D1–D10 — deviations
+D5–D7, D9–D10 deliberately reject ambiguous framing or version forms Go
+accepts; D4 and D8 are parity closures) says otherwise.
 `Strict` is a documented superset (tighter limits, rejects unusual
 Hosts, non-canonical framing fields, unknown expectations). The framing
 decision table has one implementation; the strict profile is a filter
@@ -96,7 +97,8 @@ may import `encoding/json`.
   1.26.5 toolchain — the oracle is the executable.
 - Limits and smuggling policy: RFC 9110/9112 and the Go server's
   enforcement, pinned by the corpora in `docs/verification.md` §3, with
-  the enumerated deviations in `docs/architecture.md` §2.1 (D1–D9).
+  the behavior-policy rows (deviations and parity closures) in
+  `docs/architecture.md` §2.1 (D1–D10).
 - Performance: historical amd64/AVX-512 chart (README) plus the gates
   in `docs/verification.md` §6–7; no new claim from shape alone.
 

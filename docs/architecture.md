@@ -51,7 +51,7 @@ toolchain, 2026-08-13. Full records: `docs/wrong.md`; LLD
 | G2 | duplicate `Host` accepted, even identical | differs from net/http ("too many Host headers") |
 | G3 | no `Host` presence, emptiness, or format validation | HTTP/1.1 heads without Host, `Host:`, malformed hosts accepted; net/http's server rejects missing and malformed Host (present-but-empty `Host:` is accepted by Go) |
 | G4 | control bytes (NUL, DEL, …) and invalid percent-escapes (`%zz`, `%2`) in the request-target accepted | net/http rejects via net/url |
-| G5 | no framing validation: `Content-Length` + `Transfer-Encoding`, or duplicate `Content-Length`s, accepted | differs from net/http; smuggling surface when a server is added |
+| G5 | no framing validation: `Content-Length` + `Transfer-Encoding`, or duplicate `Content-Length`s, accepted | Go rejects differing duplicates only; CL+TE is accepted at every Go layer — the gap is that simdhttp has no framing handling at all; smuggling surface when a server is added |
 | G6 | no limits: head size, header count, value length unbounded | resource exhaustion against any server built on it |
 | G7 | no body, chunked, trailers, drain, pipelining | the parser stops at the blank line, by design — but nothing beyond it exists either |
 | G8 | no router, helpers, middleware, server | the package is a primitive, not a front door |
@@ -59,32 +59,39 @@ toolchain, 2026-08-13. Full records: `docs/wrong.md`; LLD
 G1 is additionally invisible to the differential fuzz: its short seeds do
 not grow ≥ 64-byte values, so the case never reaches the oracle.
 
-## 2.1 Canonical deviations from Go 1.26.5 (current and future)
+## 2.1 Canonical behavior policy: deviations and parity closures (Go 1.26.5 oracle)
 
 This is the single list of deliberate differences between simdhttp and
-Go's reader (plus, where noted, the Go server). Every other verdict is
-parity: both accept or both reject. "compatible" and "strict" refer to
-the future `http1` profiles; current `simdhttp.Parse` behavior is shown
-too. Each row is asserted one-directionally in the differential tests
-(simdhttp rejects; Go may accept), never as a parity claim.
+Go's reader and server, plus the parity closures that pin a verdict
+both sides already share. Rows are labeled **deviation** (simdhttp
+deliberately rejects what Go accepts) or **parity closure** (both
+reject; the row records that the verdict is asserted one-directionally,
+never as a guessed parity). "compatible" and "strict" refer to the
+future `http1` profiles; current `simdhttp.Parse` behavior is shown
+too. Every row is asserted one-directionally in the differential tests
+(simdhttp rejects; the Go verdict is recorded from the probed oracle).
 
-| # | deviation | Go 1.26.5 behavior (verified) | current | compatible | strict |
-|---|---|---|---|---|---|
-| D1 | bare-LF line endings malformed | ReadRequest tolerates | rejects | rejects | rejects |
-| D2 | space inside a field name malformed (name must be a token) | ReadRequest tolerates | rejects | rejects | rejects |
-| D3 | obs-fold continuation lines malformed | ReadRequest joins folded lines | rejects | rejects | rejects |
-| D4 | duplicate `Host` rejected | any second Host line rejected ("too many Host headers") — parity | accepts (gap G2) | rejects | rejects |
-| D5 | HTTP/1.1 `Host` presence required; empty treated as missing | server rejects missing/malformed; accepts present-but-empty `Host:` | accepts all (gap G3) | `ErrMissingHost` for absent or empty | rejects |
-| D6 | duplicate `Content-Length` rejected, even identical | ReadRequest dedupes identical values, rejects differing ones | accepts all (gap G5) | rejects | rejects |
-| D7 | `Content-Length` + `Transfer-Encoding` rejected | ReadRequest deletes CL and frames chunked; the *server* rejects the combination | accepts both (gap G5) | rejects | rejects |
-| D8 | request-target controls and invalid percent-escapes rejected | ReadRequest rejects via net/url — parity | accepts (gap G4) | rejects | rejects |
-| D9 | Host format stricter than Go's: no comma, balanced brackets | Go's `ValidHostHeader` is a byte-table scan: allows comma, has no bracket-balance logic (probed: `Host: a.com,b.com` and `Host: [::1` both accepted) | accepts all (gap G3) | rejects | rejects |
+| # | rule | Go 1.26.5 behavior (verified) | current | compatible | strict | class |
+|---|---|---|---|---|---|---|
+| D1 | bare-LF line endings malformed | ReadRequest tolerates | rejects | rejects | rejects | deviation |
+| D2 | space inside a field name malformed (name must be a token) | ReadRequest tolerates | rejects | rejects | rejects | deviation |
+| D3 | obs-fold continuation lines malformed | ReadRequest joins folded lines | rejects | rejects | rejects | deviation |
+| D4 | duplicate `Host` rejected | any second Host line rejected ("too many Host headers") | accepts (gap G2) | rejects | rejects | parity closure |
+| D5 | HTTP/1.1 `Host` presence required; empty treated as missing | server rejects missing/malformed; accepts present-but-empty `Host:` | accepts all (gap G3) | `ErrMissingHost` for absent or empty | rejects | deviation |
+| D6 | duplicate `Content-Length` rejected, even identical | ReadRequest dedupes identical values, rejects differing ones | accepts all (gap G5) | rejects | rejects | deviation |
+| D7 | `Content-Length` + `Transfer-Encoding` rejected | ReadRequest and the server both delete CL and frame chunked (probed: server 200, chunked body) | accepts both (gap G5) | rejects | rejects | deviation |
+| D8 | request-target controls and invalid percent-escapes rejected | ReadRequest rejects via net/url | accepts (gap G4) | rejects | rejects | parity closure |
+| D9 | Host format stricter than Go's: no comma, balanced brackets | Go's `ValidHostHeader` is a byte-table scan: allows comma, has no bracket-balance logic (probed: `Host: a.com,b.com` and `Host: [::1` both accepted) | accepts all (gap G3) | rejects | rejects | deviation |
+| D10 | request-line version restricted to exactly `HTTP/1.0` and `HTTP/1.1` | ReadRequest accepts any `HTTP/X.Y` with single-digit X and Y (probed: `HTTP/1.2`, `HTTP/2.0`); the server accepts any 1.x and the `PRI * HTTP/2.0` client preface as an upgrade request (probed: 200) | rejects everything else | rejects | rejects | deviation |
 
-Version: both sides accept exactly `HTTP/1.0` and `HTTP/1.1` — parity,
-not a deviation. D1–D3 ship today; D4–D9 are the future `http1`
-profiles. "Compatible" is application-compatible, not
-byte-for-byte-permissive: it may reject ambiguous or security-sensitive
-forms Go accepts (D5–D7), and every such deviation is enumerated here.
+D1–D3 ship today; D4–D10 are the future `http1` profiles (D4, D8,
+and the TE-shape rule are parity closures or parity, not deviations).
+"Compatible" is application-compatible, not byte-for-byte-permissive:
+it may reject ambiguous or security-sensitive forms Go accepts
+(D5–D7, D9–D10), and every such deviation is enumerated here. The
+version restriction (D10) is deliberate in both future profiles: a
+parser whose hot path handles only the /1.x text grammar must not
+silently accept `HTTP/1.2` or an h2 preface it cannot frame.
 
 ## 3. Approved target
 
@@ -140,7 +147,7 @@ Both profiles validate, at the layer that owns the field:
 | request-target | control bytes rejected (D8); URI *semantics* remain the caller's (net/url), matching the fuzz contract |
 | URI escapes | invalid `%` escapes rejected (D8); well-formed escapes are decoded by the caller, not rewritten |
 | `Content-Length` | digits only, single value, parsed exactly; any duplicate rejected (D6) |
-| `Transfer-Encoding` | exactly one field, exactly `chunked` (case-insensitive) — the single encoding Go supports; anything else rejected (D7) |
+| `Transfer-Encoding` | exactly one field, exactly `chunked` (case-insensitive) — parity with Go's single-encoding rule; anything else rejected |
 | `Connection` | parsed and exposed for hop-by-hop handling, not acted on by the parser |
 | `Expect` | only `100-continue` recognized; unknown expectations rejected in strict profile, surfaced in compatible |
 | trailers | chunked trailers parsed with the same control-byte rules as headers, bounded |
@@ -150,13 +157,14 @@ Both profiles validate, at the layer that owns the field:
 The framing layer applies the exact ambiguity policy in
 `docs/lld/http1-body-framing.md` §4. In short: `Content-Length` and
 `Transfer-Encoding` together is always a rejection (D7 — a deviation
-from `ReadRequest`, which deletes CL and frames chunked; parity with
-the Go server); any duplicate `Content-Length` is a rejection even when
-the values agree (D6 — a deviation: Go dedupes identical values);
-`Transfer-Encoding` must be exactly one field with exactly the value
-`chunked` (matching Go's single-encoding rule); and the compatible
-profile matches the Go server's verdicts where Go's reader and server
-disagree, while the strict profile is a superset of both.
+from *both* Go's reader and server, which delete CL and frame chunked;
+probed: the server answers 200 with the chunked body); any duplicate
+`Content-Length` is a rejection even when the values agree (D6 — a
+deviation: Go dedupes identical values); `Transfer-Encoding` must be
+exactly one field with exactly the value `chunked` — parity with Go's
+single-encoding rule, not a deviation. The compatible profile matches
+Go's reader and server verdicts except the enumerated deviations
+(D5–D7, D9–D10); the strict profile is a superset of both.
 
 ### 3.5 Hot-loop discipline
 
