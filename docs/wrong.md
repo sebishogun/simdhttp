@@ -434,3 +434,51 @@ have said so: "no panic, and the same answer twice" is satisfied perfectly by a
 table that matches nothing at all. `TestTheRouterFuzzSeedsReachRealRoutes` is
 what caught it, and it is there because a fuzz target over a table that never
 matches is a panic check on the miss path wearing a router's name.
+
+## 16. The hand-kept fuzz list, and what discovering the targets found in ten seconds
+
+`make fuzz-smoke` named its targets by hand: three lines, all `./http1`. It
+missed `FuzzRouterMatch` the moment that target was written (entry 15) — so the
+fix for a target that existed only in a document would have gone straight back
+into a target that existed only in the tree.
+
+Targets are DISCOVERED now, via `go test -list '^Fuzz'`, which asks the
+compiler. Same reasoning as simdlogs' fuzz workflow, which already did this and
+says why: "A hand-maintained list is how a new target gets written and never
+run."
+
+**Two defects surfaced within a minute of the change.**
+
+The first was mine, in the discovery loop itself. `-fuzz "^$$t$$$$"` in a
+Makefile expands to `^$t$$` in the shell, and `$$` in a shell is the PROCESS
+ID. Every target ran with a pattern matching nothing, so `go test` ran the seed
+corpus and reported `ok ... 0.003s` — five green lines, four seconds of work,
+no fuzzing at all. Caught only because the timings were implausible for
+`-fuzztime 5s`. A gate that reports success in three milliseconds is not a fast
+gate.
+
+The second was real. With the pattern fixed, `FuzzParseAgainstNetHTTP` failed
+in 3 seconds:
+
+    net/http rejects (invalid empty Content-Length ""), simdhttp accepts:
+    "0 * HTTP/1.0\r\n0000:0\r\nContent-Length:\r\n\r\n"
+
+That target's contract is the security one — "simdhttp must never accept a head
+that net/http rejects", because a front parser more permissive than the origin
+is how a smuggled request slips through. It had been in the hand-kept list all
+along and had not surfaced this.
+
+It is a false positive, and the reason is worth more than the finding.
+`parseContentLength` rejects an empty value; `FramingOf` returns
+`ErrBadContentLength` for it. But the target compared `Parse` alone against
+`http.ReadRequest`, and `ReadRequest` parses the head AND resolves the framing
+in one call. Two parsers were being compared at different points in their
+pipelines, so the target could report a divergence the library does not have —
+and it wrote one into the committed corpus, where it would have read as a
+security regression to whoever found it next. It compares `Parse` followed by
+`FramingOf` now, which is the same decision, and 17.9M executions agree.
+
+**The shape.** Entry 15 was a target named in a document and never written.
+This is the same class one layer over: a target written and never run, and then
+a target run against the wrong comparison point. In both cases the artefact
+looked like coverage from every angle except the one that asks what it executes.

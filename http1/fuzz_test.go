@@ -35,7 +35,22 @@ func FuzzParseAgainstNetHTTP(f *testing.F) {
 	}
 	var req Request
 	f.Fuzz(func(t *testing.T, data []byte) {
+		// Parse AND Framing, because that is the decision net/http makes in one
+		// call. ReadRequest parses the head and resolves the framing headers
+		// together; comparing Parse alone reported a divergence the library
+		// does not have -- `Content-Length:` with an empty value is accepted by
+		// Parse and rejected by Framing, and the seed corpus gained an entry
+		// saying simdhttp accepts what net/http rejects when the documented
+		// flow rejects it too.
+		//
+		// Found by making `make fuzz-smoke` DISCOVER targets instead of listing
+		// them; this one was in the list and the disagreement had not surfaced.
 		_, ourErr := Parse(&req, data, Compatible)
+		if ourErr == nil {
+			if _, ferr := FramingOf(req.ContentLengthLines, req.TransferEncodingLines, Compatible); ferr != nil {
+				ourErr = ferr
+			}
+		}
 		hr, hErr := http.ReadRequest(bufio.NewReader(strings.NewReader(string(data))))
 		if hErr != nil && ourErr == nil {
 			// simdhttp validates message framing (RFC 9112), not URI

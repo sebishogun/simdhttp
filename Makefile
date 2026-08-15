@@ -5,6 +5,7 @@
 # leaves as green. Every target here either avoids the pipe or sets pipefail.
 .PHONY: test race vet fuzz-smoke cross-arch tiers hot-loops-check bench bench-baseline bench-check check verify
 
+GO ?= go
 FUZZTIME ?= 15s
 
 test:
@@ -19,10 +20,20 @@ vet:
 
 # Every fuzz target gets a smoke run. A crash writes a seed into testdata,
 # which is a regression asset and is committed.
+#
+# Targets are DISCOVERED, not listed. The list was hand-kept and named three of
+# the four that exist: FuzzRouterMatch had been named in docs/verification.md
+# since v1.2.0, was never written, and when it was written it would have gone
+# straight back into the same hole -- a target in the tree that looks like
+# coverage while nothing runs it. `go test -list` asks the compiler.
 fuzz-smoke:
-	go test -run '^$$' -fuzz FuzzParseAgainstNetHTTP -fuzztime $(FUZZTIME) ./http1
-	go test -run '^$$' -fuzz FuzzBodyReader -fuzztime $(FUZZTIME) ./http1
-	go test -run '^$$' -fuzz FuzzBodyDrainLeavesPipelined -fuzztime $(FUZZTIME) ./http1
+	@set -e; \
+	for pkg in $$($(GO) list ./...); do \
+		for t in $$($(GO) test -list '^Fuzz' $$pkg 2>/dev/null | grep '^Fuzz' || true); do \
+			echo "fuzz $$pkg $$t"; \
+			$(GO) test -run '^$$$$' -fuzz "^$$t$$" -fuzztime $(FUZZTIME) $$pkg; \
+		done; \
+	done
 
 # The parser reaches architecture kernels through simd, so every architecture
 # it claims must at least compile and vet. Running them needs emulation and
