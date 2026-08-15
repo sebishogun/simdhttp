@@ -397,3 +397,40 @@ precedence rows and the conflict panic all agree. No verdict in this
 repository changes. The lesson is narrower than it looks: a version
 declared by a tool manager is not evidence that the version ran, and
 `go version` costs nothing to check.
+
+## 15. A fuzz target the verification document has listed since v1.2.0 and nobody wrote
+
+`docs/verification.md:115` says:
+
+> `FuzzRouterMatch` (Phase 2) — random paths and methods against a built
+> table: no panic, deterministic params.
+
+No test of that name has ever existed in this repository — `git log -S` finds
+it only in the v1.2.0 documentation commit that introduced the sentence. It
+sits in the document that lists what the suite checks, between two targets that
+do exist, and reads exactly like them.
+
+Found by a sweep across the whole family for documents naming tests that do not
+exist. Ten repositories, ~1,180 declared tests: this was the only one.
+(simdlogs had three of the same shape, all renames rather than absences;
+simd had one rename and one benchmark name quoted from somebody else's blog
+post.)
+
+Written rather than deleted, because the guarantee is worth having and the
+sentence was right about that. 15.4M executions, no panic, no non-determinism.
+
+**Two things about writing it that are worth more than the target.**
+
+The panic property probes cleanly — a deliberate `index out of range` on paths
+beginning `/u` fails on the seed corpus alone. The determinism property does
+not probe as cleanly, because making the router non-deterministic is not a
+one-line mutation; it is asserted and not yet proven reachable.
+
+And the first version of the fixture used `/static/{rest...}`, which this
+router does not have — its wildcard is `*`. `Build()` accepted it silently as a
+single-segment parameter named `rest...`, so `/static/a/b/c` matched nothing
+and the wildcard branch was never fuzzed. Nothing in `FuzzRouterMatch` would
+have said so: "no panic, and the same answer twice" is satisfied perfectly by a
+table that matches nothing at all. `TestTheRouterFuzzSeedsReachRealRoutes` is
+what caught it, and it is there because a fuzz target over a table that never
+matches is a panic check on the miss path wearing a router's name.
