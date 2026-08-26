@@ -53,9 +53,12 @@ differential: never accept what net/http rejects), `BenchmarkParse` and
 `BenchmarkSweep` (none / typical-9 / many-100 / giant-value). Makefile
 targets `test`, `vet`, `bench`, `bench-check`.
 
-## 2. Verified gaps in the shipped parser
+## 2. Verified gaps in the root compatibility parser
 
-All confirmed by live differential against net/http, 2026-08-13, on the
+G1-G6 below describe the original root `Parse`; `http1.Parse` closes them and
+is the path for new work. G7-G8 are historical module gaps closed by phases
+1-3 except for the still-deferred server loop. All were confirmed by live
+differential against net/http, 2026-08-13, on the
 toolchain that executes here (`go1.26.2`); the router probes were
 replayed under 1.26.5 with identical output (`docs/wrong.md` entry 14). Full records: `docs/wrong.md`; LLD
 `docs/lld/http1-head-parser.md`.
@@ -68,8 +71,8 @@ replayed under 1.26.5 with identical output (`docs/wrong.md` entry 14). Full rec
 | G4 | control bytes (NUL, DEL, …) and invalid percent-escapes (`%zz`, `%2`) in the request-target accepted | net/http rejects via net/url |
 | G5 | no framing validation: `Content-Length` + `Transfer-Encoding`, or duplicate `Content-Length`s, accepted | Go rejects differing duplicates only; CL+TE is accepted at every Go layer — the gap is that simdhttp has no framing handling at all; smuggling surface when a server is added |
 | G6 | no limits: head size, header count, value length unbounded | resource exhaustion against any server built on it |
-| G7 | no body, chunked, trailers, drain, pipelining | the parser stops at the blank line, by design — but nothing beyond it exists either |
-| G8 | no router, helpers, middleware, server | the package is a primitive, not a front door |
+| G7 | historical: no body, chunked, trailers, drain, pipelining | closed in `http1`; the root compatibility parser still stops at the blank line |
+| G8 | historical: no router, helpers, middleware, server | router/helpers/middleware shipped; only a custom server remains deferred |
 
 G1 is additionally invisible to the differential fuzz: its short seeds do
 not grow ≥ 64-byte values, so the case never reaches the oracle.
@@ -81,8 +84,8 @@ Go's reader and server, plus the parity closures that pin a verdict
 both sides already share. Rows are labeled **deviation** (simdhttp
 deliberately rejects what Go accepts) or **parity closure** (both
 reject; the row records that the verdict is asserted one-directionally,
-never as a guessed parity). "compatible" and "strict" refer to the
-future `http1` profiles; current `simdhttp.Parse` behavior is shown
+never as a guessed parity). "compatible" and "strict" refer to the shipped
+`http1` profiles; current root `simdhttp.Parse` behavior is shown
 too. Every row is asserted one-directionally in the differential tests
 (simdhttp rejects; the Go verdict is recorded from the probed oracle).
 
@@ -99,22 +102,22 @@ too. Every row is asserted one-directionally in the differential tests
 | D9 | Host format stricter than Go's: no comma, balanced brackets | Go's `ValidHostHeader` is a byte-table scan: allows comma, has no bracket-balance logic (probed: `Host: a.com,b.com` and `Host: [::1` both accepted) | accepts all (gap G3) | rejects | rejects | deviation |
 | D10 | request-line version restricted to exactly `HTTP/1.0` and `HTTP/1.1` | ReadRequest accepts any `HTTP/X.Y` with single-digit X and Y (probed: `HTTP/1.2`, `HTTP/2.0`); the server accepts any 1.x and the `PRI * HTTP/2.0` client preface as an upgrade request (probed: 200) | rejects everything else | rejects | rejects | deviation |
 
-D1–D3 and D10 ship today (the current `Parse` enforces tokens, CRLF,
-no obs-fold, and the 1.0/1.1-only version line); D4–D9 are the future
-`http1` profiles (D4, D8, and the TE-shape rule are parity closures
+D1–D3 and D10 ship in root `Parse` (tokens, CRLF, no obs-fold, and the
+1.0/1.1-only version line); D4–D9 ship in the `http1` profiles (D4, D8,
+and the TE-shape rule are parity closures
 or parity, not deviations).
 "Compatible" is application-compatible, not byte-for-byte-permissive:
 it may reject ambiguous or security-sensitive forms Go accepts
 (D5–D7, D9–D10), and every such deviation is enumerated here. The
-version restriction (D10) is deliberate in both future profiles: a
+version restriction (D10) is deliberate in both profiles: a
 parser whose hot path handles only the /1.x text grammar must not
 silently accept `HTTP/1.2` or an h2 preface it cannot frame.
 
-## 3. Approved target
+## 3. Implemented production architecture
 
-The production architecture below was approved as the design direction.
-Everything in it is future work (see `docs/roadmap.md` and
-`docs/plans/2026-08-13-simdhttp-production*.md`).
+Phases 0-4 implemented the architecture below. Section 3.7 keeps the custom
+connection server explicitly deferred; current follow-on work lives in the
+production-readiness ledger.
 
 ### 3.1 Root package: `simdhttp` — the router and helpers
 
@@ -220,6 +223,6 @@ Every claim in this document traces to: `parser.go`, the test files, the
 `Makefile`, `go.mod`/`go.sum`, `git log` (commits `a60a44b` … `5c2bee2`),
 the simd module in `GOMODCACHE` (`IndexAll` stops at `len(dst)`; the
 parser's scratch sizing is therefore bounded), and the live differential
-runs of 2026-08-13 on the Go 1.26.5 toolchain. Nothing in the target
-sections is measured yet — they are design, and the plans mark each item
-with its verification gate.
+runs of 2026-08-13 on the Go 1.26.5 toolchain. Executed-phase measurements
+and exits are recorded in `docs/roadmap.md`; future claims require the
+follow-on ledger's evidence.

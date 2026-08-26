@@ -1,11 +1,8 @@
 # simdhttp Production Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
->
-> **For the executor:** this plan is future work. It is NOT to be executed
-> on the `docs/v120-documentation` branch (docs-only). Execute it in a
-> code-enabled worktree of the main repository, and check each task's
-> gates in `docs/verification.md` before its commit.
+> **Execution status:** The historical tasks below executed as phases 0-4 and
+> are retained as their work record. Do not re-execute them. Current work starts
+> in the follow-on production-readiness ledger at the bottom of this file.
 
 **Goal:** Ship the approved production library: a hardened `simdhttp/http1`
 head parser and streaming body reader, then a root net/http-native
@@ -1006,3 +1003,56 @@ get an executed-notes header.
 git add README.md docs/
 git commit -m "docs: production phases shipped, records updated"
 ```
+
+---
+
+## Follow-on: production-readiness ledger (appended 2026-08-24)
+
+The tasks above are historical records: their IDs and text are preserved and
+never renumbered or rewritten for status. Follow-on production-readiness work
+is recorded here, one task ID at a time, with the seven-state vocabulary
+(`open`, `staged`, `in-progress`, `blocked`, `evidence-complete`, `shipped`,
+`rejected`). Every row below starts `open`. A transition is an edit to this
+table (plus the changelog created by HTTP-V1-05 or `docs/wrong.md` for
+`shipped`/`rejected`);
+`rejected` is terminal without a documented reopen condition.
+
+| ID | state | work | evidence | exit |
+|---|---|---|---|---|
+| `HTTP-V1-01` | open | root net/http differential-fuzz contract: the root `FuzzParseAgainstNetHTTP` lane and the duplicate-Host finding in `docs/wrong.md`; `net/http` is an oracle only where compatibility is promised; a red run is read, never piped | fuzz run green, or the recorded red-by-design state plus a verification entry | fuzz contract green |
+| `HTTP-V1-02` | open | prove reader progress: pin accepted semicolon extensions, reject whitespace-before-semicolon forms, and assert repeated reads never return `0, nil` without progress | progress tests green | progress proven |
+| `HTTP-V1-03` | open | adversarial router shapes: the router corpus extended with pathological shapes | corpus tests green | corpus green |
+| `HTTP-V1-04` | open | strictness inventory and docs: strictness decisions inventoried and documented | strictness doc plus verification entries | inventory complete |
+| `HTTP-V1-05` | open | first release: reconcile version, create the changelog, and align README and release notes after the release gate set is green; stop at the evidence checkpoint until the user separately authorizes tag/publish operations | timed release-gate record plus matching version, changelog, README and release-note candidate | release evidence complete; tag/publish only when separately authorized |
+| `HTTP-V1-06` | open | cross-ecosystem workload decision: compare parser and router workloads with fasthttp, llhttp, picohttpparser, hyper, and httparse; classify material gaps as v1 blockers, post-v1 work, or rejected with evidence | workload matrix below plus the decision record | gaps classified; a server loop stays outside the boundary without a separately approved design |
+| `HTTP-V1-07` | open | fresh performance evidence: parser/router allocation, throughput, and adversarial-shape benchmarks in a coordinated quiet-host window, with runtime SIMD engagement verified for every SIMD-backed claim | provenance, `-benchmem`, dispatch assertions, and interleaved peer comparisons | current performance claims reproducible |
+
+### v1 exit
+
+v1 ships when the fuzz, progress, router, and strictness contracts are green
+with reproducible evidence, the workload/ecosystem decisions are recorded
+with no material gap left unclassified (HTTP-V1-06), and the first release
+gates are green: the fuzz contract (HTTP-V1-01), reader progress
+(HTTP-V1-02), the adversarial router corpus (HTTP-V1-03), the strictness
+inventory (HTTP-V1-04), the cross-ecosystem workload decisions, the fresh
+performance evidence (HTTP-V1-07), and the first release
+(HTTP-V1-05).
+
+### Workload matrix (competitive work)
+
+Columns: `workload | this repo | peer | oracle-or-basis | gate`.
+
+`net/http` is an oracle only where compatibility is promised: the
+`FuzzParseAgainstNetHTTP` differential and the route differential against
+`net/http.ServeMux`. fasthttp, llhttp, picohttpparser, hyper, and httparse
+are workload and performance peers, never behavioral oracles. Rows are
+concrete shapes from the test and fuzz surface; figures are quoted from
+sources with provenance, never invented; a gap is a workload, an allocation,
+a dispatch, or a measurement, never a feature count.
+
+| workload | this repo | peer | oracle-or-basis | gate |
+|---|---|---|---|---|
+| parse-vs-net/http differential shapes (the differential corpus and fuzz seeds) | `simdhttp.Parse` and `http1.Parse` | fasthttp, llhttp, picohttpparser, hyper, httparse request-head parsers | `net/http` verdicts where compatibility is promised | differential corpus and fuzz green (HTTP-V1-01) |
+| router-match corpus (the route differential pattern sets and request corpus) | `Router.ServeHTTP` and the match bench | fasthttp routing where the same workload is exposed; parser-only peers are not compared on this row | `net/http.ServeMux` verdicts where compatibility is promised | route differential and corpus green (HTTP-V1-03) |
+| adversarial parser shapes (pathological heads and bodies) | the adversarial parser corpus | fasthttp, llhttp, picohttpparser, hyper, httparse | none - the strictness contract is simdhttp's own | corpus and progress tests green (HTTP-V1-01, HTTP-V1-02, HTTP-V1-04) |
+| adversarial route patterns | the adversarial router corpus | fasthttp routing where comparable; parser-only peers are not applicable | `net/http.ServeMux` only inside the promised route overlap | route corpus green (HTTP-V1-03, HTTP-V1-04) |

@@ -8,11 +8,14 @@ tier, the purego build, the hot-loop disassembly gate, and build+vet on
 arm64, s390x, ppc64le, riscv64 and loong64.
 
 The duplicate-Host red recorded in an earlier revision of this document
-is closed: G2 was fixed in Phase 0 and its repro is committed as
-`testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878`, so a fresh
+is closed in `http1`: G2 was fixed in Phase 0 and its repro is committed as
+`http1/testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878`, so a fresh
 clone replays it at baseline rather than rediscovering it. A second seed,
-`b073e10c2a865463`, pins an empty `Transfer-Encoding` found while
-hardening.
+`http1/testdata/fuzz/FuzzParseAgainstNetHTTP/b073e10c2a865463`, pins an empty
+`Transfer-Encoding` found while hardening. A third,
+`http1/testdata/fuzz/FuzzParseAgainstNetHTTP/380635b496a090dc`, pins empty `Content-Length` and the
+full parse-plus-framing comparison. The root compatibility fuzz lane remains
+separate and is owned by HTTP-V1-01.
 
 `make verify` adds the fuzz smokes and `bench-check`. `bench-check`
 compares wall-clock against `testdata/bench.txt`, so it belongs on a
@@ -57,11 +60,11 @@ one (`docs/wrong.md` entry 14).
 
 ## 2. Gate hygiene (house rules)
 
-- Gates run bare: no pipe without `set -o pipefail`. The current
-  `Makefile` `bench-check` target pipes through `tee` **and ends in an
-  unconditional `@echo`**, so it succeeds no matter what the bench did
-  (wrong.md §8); `bench-check` is advisory until the Phase 4 gates
-  rework fixes it, and is never relied on in CI form.
+- Gates run bare: no pipe without `set -o pipefail`. Phase 4 replaced the
+  broken `tee`/unconditional-echo target with `scripts/bench-check.sh`; no pipe
+  carries its verdict. The committed wall-clock baseline was captured above
+  load 1, so regenerate it on a quiet host before using it as performance
+  evidence.
 - Bench runs: one process, `-shuffle=on`, `-count=6`, compared on the
   **minimum**, A/B builds **interleaved in one session**, machine quiet
   (load average < 1). Never compare across sessions.
@@ -115,7 +118,7 @@ the probed oracle so the corpus doubles as the deviation documentation.
 - `FuzzRouterMatch` (Phase 2) — random paths and methods against a
   built table: no panic, deterministic params.
 - Smoke policy: every commit runs `-fuzztime=15s` on each target; the
-  roadmap phases run overnight budgets before merge.
+  executed roadmap phases ran overnight budgets before merge.
 
 ## 5. Route differential vs net/http
 
@@ -178,7 +181,7 @@ wrong.
 
 ## 8. Cross-arch and tiers
 
-- `GOOS/GOARCH` compile + test for amd64, arm64, riscv64, loong64
+- `GOOS/GOARCH` compile + vet for arm64, s390x, ppc64le, riscv64, and loong64
   (cross-compile at minimum; emulated execution where the simd
   toolchain supports it).
 - Tier runs: the simd dependency dispatches per instruction set; the

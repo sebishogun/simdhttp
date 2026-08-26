@@ -136,12 +136,13 @@ exactly what a smuggled request needs — one component frames the body one
 way, the next frames it another, and the bytes between the two readings are
 a request nobody inspected.
 
-The differential fuzz asserts the one-direction contract — never accept
-what net/http rejects. Two committed corpus seeds pin what it found:
-`4cb4ee00bf74f878` (duplicate `Host`, the G2 record) and
-`b073e10c2a865463` (empty `Transfer-Encoding`, found while hardening).
-Both are red on the unfixed parser and green now, so a fresh clone
-reproduces rather than starting green. The last smoke ran 9.7M
+The `http1` differential fuzz asserts the one-direction contract — never
+accept what net/http rejects. Three committed corpus seeds pin what it found:
+`4cb4ee00bf74f878` (duplicate `Host`), `b073e10c2a865463` (empty
+`Transfer-Encoding`), and `380635b496a090dc` (empty `Content-Length`, which
+also pinned that the differential compares the full framing decision).
+They are red on the unfixed path and green now, so a fresh clone reproduces
+rather than starting green. The last recorded smoke ran 9.7M
 executions with no finding. The committed corpus also covers the shapes
 short seeds never grow into — the ≥ 64-byte value with a tab before a
 NUL among them.

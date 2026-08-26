@@ -179,14 +179,15 @@ number behind it does not go in a doc.
 
 ## What this repository is
 
-simdhttp is a Go library for HTTP/1 request-head parsing on the
-[simd](https://github.com/sebishogun/simd) kernels. The shipped surface
-is exactly the borrowed-buffer request-head parser `simdhttp.Parse`;
-there is no router, no body framing, no middleware, and no server.
-Ownership and concurrency are part of the contract: every `Request`
-field aliases the caller's buffer, the caller owns the bytes and their
-lifetime, and a `Request` is not safe for concurrent use — `Parse`
-reuses its scratch. Compatibility with `net/http` is one-directional —
+simdhttp is a Go HTTP/1 request-head, body-framing, and routing library on
+the [simd](https://github.com/sebishogun/simd) kernels. It ships the root
+borrowed-buffer parser, the hardened `http1` parser and body reader, an
+immutable-build `http.Handler` router, helpers, middleware, and an error
+adapter. It does not ship a socket-accepting server loop; the router runs
+under `net/http`. Ownership and concurrency are part of the contract: every
+root `Request` field aliases the caller's buffer, the caller owns the bytes
+and their lifetime, and a `Request` is not safe for concurrent use because
+`Parse` reuses its scratch. Compatibility with `net/http` is one-directional —
 never accept what the standard reader rejects within the documented
 scope — and every deviation is enumerated in `docs/architecture.md`
 §2.1 (D1–D10).
@@ -204,49 +205,45 @@ it, and never amend a committed change without instruction.
 
 ## Shipped status (facts, not aspirations)
 
-- **Parser-only.** The shipped surface is `simdhttp.Parse`; everything
-  else in the docs is target.
+- **Phases 0-4 executed.** The root compatibility parser, hardened `http1`
+  parser/body reader, router, helpers, middleware, and error adapter are in
+  source and tests. Only a custom server loop remains outside the boundary.
 - **No tagged release.** Verified: the repository has no tags; the code
   ships as the branch tip until a gated release exists.
 - **Ownership / compat / concurrency.** The caller owns the bytes and
   their lifetime (fields alias the buffer); a `Request` is not safe for
   concurrent use; the net/http contract is one-directional with
   deviations D1–D10 (`docs/architecture.md` §2.1).
-- **Roadmap-not-shipped.** The roadmap, production design, and plan are
-  the approved target — nothing in them is shipped until it is in the
-  code and the tests. Do not write prose that makes an open item sound
-  built.
+- **Roadmap separates executed work from open work.** Phases 0-4 and their
+  exits are history; the production-readiness section and follow-on ledger
+  own what remains. Code and tests decide what ships.
 - **Verification and release gates.** Every commit passes the gates in
   `docs/verification.md`; a release runs the full gated set and exists
   only as a tag. There is no release today.
-- **G2 red fuzz blocker.** The differential fuzz smoke is red by design
-  on the duplicate-Host case (`0 * HTTP/1.0\r\nHost:\r\nHost:\r\n\r\n`,
-  `docs/wrong.md` §3) until the roadmap's Phase 0 fixes the parser —
-  the production plan's Tasks 1–8 own that fix. The red is local: it
-  replays from the campaign cache and a run-written corpus file, and
-  **no seed is committed** (`git ls-files` has no `testdata`), so a
-  fresh clone's fuzz stays green until rediscovery; plan Task 3
-  commits the seed `testdata/fuzz/FuzzParseAgainstNetHTTP/4cb4ee00bf74f878`
-  with the fix. A red run is read, never piped; the finding is the
-  deliverable.
+- **Root fuzz debt.** Phase 0 closed duplicate-Host and related findings in
+  `http1`; its committed corpus lives under `http1/testdata/fuzz/`. The root
+  compatibility parser still accepts duplicate Host and its root
+  `FuzzParseAgainstNetHTTP` lane is owned by HTTP-V1-01. That root lane has no
+  committed root seed, so a local campaign may be red after rediscovery while
+  a fresh clone starts from built-in seeds. Read a red run; never pipe it.
 
 ## Read order (required)
 
 1. `README.md` — front page, shipped surface, gaps, historical chart.
-2. `docs/architecture.md` — shipped surface, gaps G1–G8, behavior
-   policy D1–D10, target.
-3. `docs/roadmap.md` — staged phases; nothing in it is shipped.
+2. `docs/architecture.md` — shipped surface, historical gaps G1–G8,
+   behavior policy D1–D10, implemented architecture, deferred server.
+3. `docs/roadmap.md` — executed phases 0-4 and current readiness gaps.
 4. `docs/plans/2026-08-13-simdhttp-production-design.md` — the approved
    production design.
-5. `docs/lld/router.md` — router LLD (target).
+5. `docs/lld/router.md` — shipped router LLD.
 6. `docs/lld/http1-head-parser.md` — head parser LLD.
-7. `docs/lld/http1-body-framing.md` — body framing LLD (target).
-8. `docs/lld/net-http-integration.md` — integration LLD (target).
+7. `docs/lld/http1-body-framing.md` — shipped body-framing LLD.
+8. `docs/lld/net-http-integration.md` — shipped integration LLD.
 9. `docs/verification.md` — every gate.
 10. `docs/wrong.md` — the record of findings; a new finding belongs
     there whether or not code changed.
-11. `docs/plans/2026-08-13-simdhttp-production.md` — the future TDD
-    plan; execute it only when a task says so.
+11. `docs/plans/2026-08-13-simdhttp-production.md` — executed historical
+    plan plus the current follow-on ledger; do not re-execute old tasks.
 
 ## Claims must be sourced, and verified before they are written
 
@@ -317,11 +314,10 @@ average under 1.
 
 **Never pipe a gate through `tail`** (or anything else) without
 `pipefail`: the pipe reports the last command's status and the failure
-vanishes. Run gates bare, or `set -o pipefail` first. Note that the
-current `Makefile` `bench-check` target pipes through `tee` without
-`pipefail` **and ends in an unconditional `@echo`**, so it always
-succeeds — a known gate flaw, recorded in `docs/wrong.md` and
-`docs/verification.md`, scheduled for the gates rework.
+vanishes. Run gates bare, or `set -o pipefail` first. The current
+`bench-check` runs `scripts/bench-check.sh` with no verdict-carrying pipe;
+its committed baseline was captured above load 1, so regenerate that baseline
+on a quiet host before using wall-clock results as evidence.
 
 ## The record
 
@@ -338,11 +334,9 @@ Run the gates bare, in this order, and read the output:
 2. `gofmt -l .` and `go vet ./...`
 3. `go test -race ./...`
 4. a fuzz smoke: `go test -fuzz=FuzzParseAgainstNetHTTP -fuzztime=15s .`
-   (currently **red by design, locally**: the fuzz reaches the
-   documented duplicate-Host gap G2 — wrong.md §3, verification.md
-   intro. A fresh clone has no committed seed and stays green until
-   rediscovery; plan Task 3 pins the seed with the fix. A red run
-   must be read, not piped; the finding is the deliverable.)
+   The root compatibility lane may rediscover duplicate Host and is owned by
+   HTTP-V1-01; `http1` has committed red-then-green seeds. A red run must be
+   read, not piped.
 5. Markdown checks: links inside `docs/` resolve, no dead references, no
    trailing-whitespace drift in files touched.
 
@@ -352,3 +346,27 @@ documentation commits). A commit's contents follow the task scope: a
 documentation-only task commits Markdown only — never Go, tests,
 modules, the Makefile, workflows, assets, baselines, or release
 records.
+
+## Production task management
+
+- **Local authority.** `docs/roadmap.md` is canonical; the follow-on ledger
+  appended to `docs/plans/2026-08-13-simdhttp-production.md` is the only
+  staging area for production-readiness tasks; `docs/wrong.md` is the only
+  record of rejections. The family index at
+  `github.com/sebishogun/simd`'s
+  `docs/plans/2026-08-24-simd-family-production-readiness.md` is a link
+  collection, noncanonical, and never overrides local truth; it never
+  duplicates per-task status.
+- **One task ID at a time.** Work executes one task at a time by its ID from
+  the ledger (for example `HTTP-V1-01`). A session touching implementation
+  work names its task ID in its first message; without one it touches no
+  implementation files.
+- **State transitions.** Seven states: `open`, `staged`, `in-progress`,
+  `blocked`, `evidence-complete`, `shipped`, `rejected`. A transition is an
+  edit in the ledger (plus the changelog created by HTTP-V1-05 or
+  `docs/wrong.md` for
+  `shipped`/`rejected`); `rejected` is terminal without a documented reopen
+  condition; historical task text and IDs are never edited for status.
+- **Gate rule.** Before any commit: the gate set from `docs/verification.md`,
+  run bare (no `tail` without `pipefail`), with explicit timeouts; a hung
+  test binary is a leak alarm, not a retry candidate.

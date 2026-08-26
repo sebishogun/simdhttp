@@ -26,7 +26,7 @@ immediate successor:
 - Limits: head size, header count, request-line length, value length —
   typed errors, enforced during the scan (LLD §3.2).
 - Tests first (TDD, `docs/plans/2026-08-13-simdhttp-production.md`
-  Tasks 1–8): the G1 regression test fails on today's parser.
+  Tasks 1–8): the G1 regression test failed on the then-current root parser.
 - Fuzz seeds extended so the differential reaches the long-value path.
 
 **Exit:** parser rejects every input in the verification smuggling
@@ -133,3 +133,36 @@ before being fixed rather than reasoned about.
 - **The 8.3% floor is inherited, not measured here.** It comes from the
   simd repository's record; this repository has never measured its own
   layout noise (`docs/wrong.md` entry 8).
+
+## Production readiness
+
+Maturity snapshot dated 2026-08-24: **R2**. The intended parser/router
+surface exists - phases 0-4 above are executed - and the root
+differential-fuzz contract and first-release evidence remain.
+
+Open high-level work:
+
+- The root net/http differential-fuzz contract: the
+  `FuzzParseAgainstNetHTTP` lane and the duplicate-Host finding in
+  `docs/wrong.md`, where `net/http` is an oracle only where
+  compatibility is promised.
+- Reader progress: semicolon handling and repeated `0, nil` reads must
+  make progress.
+- Adversarial router shapes: the router corpus extended with
+  pathological shapes.
+- Strictness inventory and docs: every strictness decision inventoried
+  and documented.
+- First release gates.
+- Workload decisions against fasthttp, llhttp, picohttpparser, hyper,
+  and httparse: workload and performance peers, never behavioral
+  oracles.
+- Fresh performance evidence: allocation, throughput, adversarial
+  shapes, and runtime SIMD dispatch, measured in a quiet-host window.
+
+A server loop remains outside the product boundary unless separately
+approved design evidence moves it in (deferred above, architecture
+Section 3.7).
+
+Per-task status lives in the follow-on ledger appended to
+[the production plan](plans/2026-08-13-simdhttp-production.md),
+not here.
